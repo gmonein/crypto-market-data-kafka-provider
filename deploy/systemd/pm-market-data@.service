@@ -1,0 +1,18 @@
+[Unit]
+Description=pm-market-data followers (%i)
+After=docker.service pm-market-data-kafka.service
+Requires=docker.service pm-market-data-kafka.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/pm-market-data
+EnvironmentFile=-/etc/pm-market-data/pm-market-data.env
+Environment=MARKET_SYMBOL=%i
+Environment=COMPOSE_PROJECT_NAME=pm-market-data-%i
+ExecStartPre=/opt/pm-market-data/deploy/create-topics.sh %i
+ExecStart=/usr/bin/docker compose -f deploy/docker-compose.followers.yml up -d
+ExecStop=/usr/bin/docker compose -f deploy/docker-compose.followers.yml down
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
