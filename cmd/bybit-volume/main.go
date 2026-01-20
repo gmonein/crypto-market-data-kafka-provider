@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"market_follower/internal/kafka"
+	"market_follower/internal/nats"
 	"market_follower/internal/models"
 	"market_follower/internal/symbols"
 
@@ -19,8 +19,8 @@ import (
 )
 
 var (
-	kafkaBrokers = flag.String("brokers", "localhost:9092", "Kafka brokers")
-	topicFlag    = flag.String("topic", "", "Kafka topic")
+	kafkaBrokers = flag.String("brokers", "nats://localhost:4222", "NATS URLs")
+	topicFlag    = flag.String("topic", "", "NATS subject")
 	wsURL        = flag.String("ws-url", "wss://stream.bybit.com/v5/public/spot", "Bybit WebSocket URL")
 	symbolFlag   = flag.String("symbol", symbols.FromEnv("BTCUSDT"), "Bybit symbol (e.g. BTCUSDT)")
 )
@@ -49,15 +49,11 @@ func main() {
 	symbolLower := symbols.Lower(symbolNorm)
 	topic := *topicFlag
 	if topic == "" {
-		if symbolNorm == "BTCUSDT" || symbolNorm == "BTCUSD" {
-			topic = "bybit_volume"
-		} else {
-			topic = "bybit_" + symbolLower + "_volume"
-		}
+		topic = "bybit_" + symbolLower + "_volume"
 	}
 	subSymbol := symbols.BybitSymbol(symbolNorm)
 
-	producer := kafka.NewProducer(brokers, topic)
+	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
 
 	log.Printf("Starting Bybit Volume Follower. Brokers: %v, Topic: %s, Symbol: %s", brokers, topic, symbolNorm)
@@ -86,7 +82,7 @@ func main() {
 		}
 		log.Printf("%s\n", b)
 		if err := producer.WriteMessage(nil, b); err != nil {
-			log.Printf("Kafka write error: %v", err)
+			log.Printf("NATS publish error: %v", err)
 		}
 	}
 

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"market_follower/internal/kafka"
+	"market_follower/internal/nats"
 	"market_follower/internal/models"
 	"market_follower/internal/symbols"
 
@@ -19,8 +19,8 @@ import (
 )
 
 var (
-	kafkaBrokers = flag.String("brokers", "localhost:9092", "Kafka brokers")
-	topicFlag    = flag.String("topic", "", "Kafka topic")
+	kafkaBrokers = flag.String("brokers", "nats://localhost:4222", "NATS URLs")
+	topicFlag    = flag.String("topic", "", "NATS subject")
 	symbolFlag   = flag.String("symbol", symbols.FromEnv("BTCUSDT"), "Binance symbol (e.g. BTCUSDT)")
 )
 
@@ -39,7 +39,7 @@ func main() {
 	streamSymbol := symbols.BinanceStreamSymbol(symbolNorm)
 	wsURL := fmt.Sprintf("wss://stream.binance.com:9443/ws/%s@trade", streamSymbol)
 
-	producer := kafka.NewProducer(brokers, topic)
+	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
 
 	log.Printf("Starting Binance Price Follower. Brokers: %v, Topic: %s, Symbol: %s", brokers, topic, symbolNorm)
@@ -86,7 +86,7 @@ func main() {
 
 				err = producer.WriteMessage(nil, outputBytes)
 				if err != nil {
-					log.Printf("Kafka write error: %v", err)
+					log.Printf("NATS publish error: %v", err)
 				}
 			case <-interrupt: // Stop if interrupt triggered (shared channel logic needs care)
 				// We'll handle shutdown via main loop return

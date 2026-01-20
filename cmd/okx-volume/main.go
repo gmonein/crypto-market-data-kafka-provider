@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"market_follower/internal/kafka"
+	"market_follower/internal/nats"
 	"market_follower/internal/models"
 	"market_follower/internal/symbols"
 
@@ -19,8 +19,8 @@ import (
 )
 
 var (
-	kafkaBrokers = flag.String("brokers", "localhost:9092", "Kafka brokers")
-	topicFlag    = flag.String("topic", "", "Kafka topic")
+	kafkaBrokers = flag.String("brokers", "nats://localhost:4222", "NATS URLs")
+	topicFlag    = flag.String("topic", "", "NATS subject")
 	wsURL        = flag.String("ws-url", "wss://ws.okx.com:8443/ws/v5/business", "OKX WebSocket URL")
 	instIDFlag   = flag.String("inst-id", "", "OKX instrument id (e.g. BTC-USDT)")
 	symbolFlag   = flag.String("symbol", symbols.FromEnv("BTCUSDT"), "OKX symbol (e.g. BTCUSDT)")
@@ -52,14 +52,10 @@ func main() {
 	}
 	topic := *topicFlag
 	if topic == "" {
-		if symbolNorm == "BTCUSDT" || symbolNorm == "BTCUSD" {
-			topic = "okx_volume"
-		} else {
-			topic = "okx_" + symbols.Lower(symbolNorm) + "_volume"
-		}
+		topic = "okx_" + symbols.Lower(symbolNorm) + "_volume"
 	}
 
-	producer := kafka.NewProducer(brokers, topic)
+	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
 
 	log.Printf("Starting OKX Volume Follower. Brokers: %v, Topic: %s, InstID: %s", brokers, topic, instID)
@@ -135,7 +131,7 @@ func main() {
 					t := lastTime
 					mu.Unlock()
 
-					log.Printf("%f", lastVolume)
+					log.Printf("%s", lastVolume)
 					if v != "" {
 						out := models.VolumeOutput{Timestamp: t, Volume: v, Symbol: symbolNorm}
 						b, _ := json.Marshal(out)
@@ -177,7 +173,7 @@ func main() {
 					continue
 				}
 				if err := producer.WriteMessage(nil, b); err != nil {
-					log.Printf("Kafka write error: %v", err)
+					log.Printf("NATS publish error: %v", err)
 				}
 			}
 		}()

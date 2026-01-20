@@ -14,7 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"market_follower/internal/kafka"
+	"market_follower/internal/features"
+	"market_follower/internal/nats"
 	"market_follower/internal/models"
 	"market_follower/internal/orderbook"
 	"market_follower/internal/symbols"
@@ -23,8 +24,8 @@ import (
 )
 
 var (
-	kafkaBrokers = flag.String("brokers", "localhost:9092", "Kafka brokers")
-	topicFlag    = flag.String("topic", "", "Kafka topic")
+	kafkaBrokers = flag.String("brokers", "nats://localhost:4222", "NATS URLs")
+	topicFlag    = flag.String("topic", "", "NATS subject")
 	wsURL        = flag.String("ws-url", "wss://ws.bitget.com/v2/ws/public", "Bitget WebSocket URL")
 	symbolFlag   = flag.String("symbol", symbols.FromEnv("BTCUSDT"), "Bitget symbol (e.g. BTCUSDT)")
 	depthFlag    = flag.Int("depth", 15, "Bitget orderbook depth (5, 15, or 0 for full)")
@@ -55,11 +56,7 @@ func main() {
 	symbolLower := symbols.Lower(symbolNorm)
 	topic := *topicFlag
 	if topic == "" {
-		if symbolNorm == "BTCUSDT" || symbolNorm == "BTCUSD" {
-			topic = "bitget_orderbook"
-		} else {
-			topic = "bitget_" + symbolLower + "_orderbook"
-		}
+		topic = "bitget_" + symbolLower + "_orderbook"
 	}
 	subSymbol := symbols.BitgetSymbol(symbolNorm)
 	channel := "books"
@@ -73,11 +70,12 @@ func main() {
 		log.Printf("Unsupported depth %d, defaulting to full book", depth)
 		channel = "books"
 	}
+	outputMode := orderbook.OutputMode()
 
-	producer := kafka.NewProducer(brokers, topic)
+	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
 
-	log.Printf("Starting Bitget Orderbook Follower. Brokers: %v, Topic: %s, Symbol: %s, Channel: %s", brokers, topic, symbolNorm, channel)
+	log.Printf("Starting Bitget Orderbook Follower. Brokers: %v, Topic: %s, Symbol: %s, Channel: %s, Output: %s", brokers, topic, symbolNorm, channel, outputMode)
 
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
@@ -100,23 +98,50 @@ func main() {
 		if len(snap.Bids) == 0 && len(snap.Asks) == 0 {
 			return
 		}
-		out := models.OrderbookOutput{
-			Timestamp:       ts,
-			Symbol:          symbolNorm,
-			BestBid:         snap.BestBid,
-			BestAsk:         snap.BestAsk,
-			BestBidQuantity: snap.BestBidQty,
-			BestAskQuantity: snap.BestAskQty,
-			Bids:            snap.Bids,
-			Asks:            snap.Asks,
-			Snapshot:        snapshot,
+		var out any
+		if outputMode == orderbook.OutputFeatures {
+			metrics, ok := features.ComputeOrderbookFeatures(snap)
+			if !ok {
+				return
+			}
+			out = models.OrderbookFeaturesOutput{
+				Timestamp:       ts,
+				Symbol:          symbolNorm,
+				BestBid:         snap.BestBid,
+				BestAsk:         snap.BestAsk,
+				BestBidQuantity: snap.BestBidQty,
+				BestAskQuantity: snap.BestAskQty,
+				Mid:             metrics.Mid,
+				Spread:          metrics.Spread,
+				SpreadBps:       metrics.SpreadBps,
+				MicroPrice:      metrics.MicroPrice,
+				Imbalance1:      metrics.Imbalance1,
+				Imbalance5:      metrics.Imbalance5,
+				Imbalance10:     metrics.Imbalance10,
+				BidDepth5:       metrics.BidDepth5,
+				AskDepth5:       metrics.AskDepth5,
+				BidDepth10:      metrics.BidDepth10,
+				AskDepth10:      metrics.AskDepth10,
+			}
+		} else {
+			out = models.OrderbookOutput{
+				Timestamp:       ts,
+				Symbol:          symbolNorm,
+				BestBid:         snap.BestBid,
+				BestAsk:         snap.BestAsk,
+				BestBidQuantity: snap.BestBidQty,
+				BestAskQuantity: snap.BestAskQty,
+				Bids:            snap.Bids,
+				Asks:            snap.Asks,
+				Snapshot:        snapshot,
+			}
 		}
 		b, err := json.Marshal(out)
 		if err != nil {
 			return
 		}
 		if err := producer.WriteMessage(nil, b); err != nil {
-			log.Printf("Kafka write error: %v", err)
+			log.Printf("NATS publish error: %v", err)
 		}
 	}
 

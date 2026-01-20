@@ -1,2 +1,4 @@
 .env
 redpanda-data
+*.opvn
+worldstream.ovpn

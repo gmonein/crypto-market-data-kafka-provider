@@ -1,58 +1,51 @@
-# AWS deployment (docker-compose + systemd)
+# Deployment (rsync + docker compose)
 
-This setup runs Redpanda separately from the market-data followers so you can scale symbols via systemd.
+This setup syncs the repo to the `am` host and runs all crawlers via a single
+profile-based Docker Compose file.
 
-## Prereqs
-
-- Docker Engine + docker compose plugin
-- Repo cloned on the host (examples assume `/opt/pm-market-data`)
-
-## Optional env file
-
-Create `/etc/pm-market-data/pm-market-data.env` for shared environment values:
+## Sync to the host
 
 ```bash
+./deploy/rsync-am.sh
+```
+
+Override the destination if needed:
+
+```bash
+./deploy/rsync-am.sh am:/home/g/polymarket-services/pm-market-data/
+```
+
+## Run crawlers per symbol
+
+Start:
+
+```bash
+ssh am 'cd /home/g/polymarket-services/pm-market-data && ./deploy/run-crawlers.sh BTCUSDT up'
+```
+
+Stop followers:
+
+```bash
+ssh am 'cd /home/g/polymarket-services/pm-market-data && ./deploy/run-crawlers.sh BTCUSDT down'
+```
+
+Stop followers and NATS (infra):
+
+```bash
+ssh am 'cd /home/g/polymarket-services/pm-market-data && STOP_NATS=1 ./deploy/run-crawlers.sh BTCUSDT down'
+```
+
+Notes:
+- `run-crawlers.sh` ensures the shared `pm-net` network exists.
+- NATS runs once in the `pm-market-data-infra` project; followers run per-symbol projects.
+
+## Env
+
+Place a `.env` file in the repo root on the host (Docker Compose loads it automatically). Example:
+
+```bash
+ORDERBOOK_OUTPUT=features
 COINBASE_API_KEY=
 COINBASE_API_SECRET=
 COINBASE_API_PASSPHRASE=
-```
-
-## Install systemd units
-
-```bash
-sudo cp deploy/systemd/pm-market-data-kafka.service /etc/systemd/system/
-sudo cp deploy/systemd/pm-market-data@.service /etc/systemd/system/
-sudo systemctl daemon-reload
-```
-
-## Start Redpanda
-
-```bash
-sudo systemctl enable --now pm-market-data-kafka.service
-```
-
-## Start followers per symbol
-
-```bash
-sudo systemctl enable --now pm-market-data@BTCUSDT
-sudo systemctl enable --now pm-market-data@ETHUSDT
-sudo systemctl enable --now pm-market-data@SOLUSDT
-sudo systemctl enable --now pm-market-data@XRPUSDT
-```
-
-The unit runs `deploy/create-topics.sh` for each symbol before starting containers.
-
-## Logs
-
-```bash
-journalctl -u pm-market-data@BTCUSDT -f
-```
-
-## Notes
-
-- If you install the repo elsewhere, update `WorkingDirectory` and paths in `deploy/systemd/*.service`.
-- You can create topics manually with:
-
-```bash
-./deploy/create-topics.sh BTCUSDT ETHUSDT SOLUSDT XRPUSDT
 ```

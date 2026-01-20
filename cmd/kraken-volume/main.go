@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"market_follower/internal/kafka"
+	"market_follower/internal/nats"
 	"market_follower/internal/models"
 	"market_follower/internal/symbols"
 
@@ -19,8 +19,8 @@ import (
 )
 
 var (
-	kafkaBrokers = flag.String("brokers", "localhost:9092", "Kafka brokers")
-	topicFlag    = flag.String("topic", "", "Kafka topic")
+	kafkaBrokers = flag.String("brokers", "nats://localhost:4222", "NATS URLs")
+	topicFlag    = flag.String("topic", "", "NATS subject")
 	wsURL        = "wss://ws.kraken.com"
 	pairFlag     = flag.String("pair", "", "Kraken pair (e.g. XBT/USD)")
 	symbolFlag   = flag.String("symbol", symbols.FromEnv("BTCUSDT"), "Kraken symbol (e.g. BTCUSDT)")
@@ -43,14 +43,10 @@ func main() {
 	}
 	topic := *topicFlag
 	if topic == "" {
-		if symbolNorm == "BTCUSDT" || symbolNorm == "BTCUSD" {
-			topic = "kraken_volume"
-		} else {
-			topic = "kraken_" + symbols.Lower(symbolNorm) + "_volume"
-		}
+		topic = "kraken_" + symbols.Lower(symbolNorm) + "_volume"
 	}
 
-	producer := kafka.NewProducer(brokers, topic)
+	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
 
 	log.Printf("Starting Kraken Volume Follower. Brokers: %v, Topic: %s, Pair: %s", brokers, topic, pair)
@@ -79,7 +75,7 @@ func main() {
 		}
 		log.Printf("%s\n", b)
 		if err := producer.WriteMessage(nil, b); err != nil {
-			log.Printf("Kafka write error: %v", err)
+			log.Printf("NATS publish error: %v", err)
 		}
 	}
 

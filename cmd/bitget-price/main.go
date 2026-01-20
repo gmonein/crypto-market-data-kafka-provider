@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"market_follower/internal/kafka"
+	"market_follower/internal/nats"
 	"market_follower/internal/models"
 	"market_follower/internal/symbols"
 
@@ -19,8 +19,8 @@ import (
 )
 
 var (
-	kafkaBrokers = flag.String("brokers", "localhost:9092", "Kafka brokers")
-	topicFlag    = flag.String("topic", "", "Kafka topic")
+	kafkaBrokers = flag.String("brokers", "nats://localhost:4222", "NATS URLs")
+	topicFlag    = flag.String("topic", "", "NATS subject")
 	wsURL        = flag.String("ws-url", "wss://ws.bitget.com/v2/ws/public", "Bitget WebSocket URL")
 	symbolFlag   = flag.String("symbol", symbols.FromEnv("BTCUSDT"), "Bitget symbol (e.g. BTCUSDT)")
 )
@@ -52,7 +52,7 @@ func main() {
 	}
 	subSymbol := symbols.BitgetSymbol(symbolNorm)
 
-	producer := kafka.NewProducer(brokers, topic)
+	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
 
 	log.Printf("Starting Bitget Price Follower. Brokers: %v, Topic: %s, Symbol: %s", brokers, topic, symbolNorm)
@@ -92,7 +92,7 @@ func main() {
 				}
 				// log.Printf("%s\n", b)
 				if err := producer.WriteMessage(nil, b); err != nil {
-					log.Printf("Kafka write error: %v", err)
+					log.Printf("NATS publish error: %v", err)
 				}
 			case <-interrupt:
 				return

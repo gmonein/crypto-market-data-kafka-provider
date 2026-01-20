@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"market_follower/internal/kafka"
+	"market_follower/internal/nats"
 	"market_follower/internal/models"
 	"market_follower/internal/symbols"
 
@@ -19,8 +19,8 @@ import (
 )
 
 var (
-	kafkaBrokers  = flag.String("brokers", "localhost:9092", "Kafka brokers")
-	topicFlag     = flag.String("topic", "", "Kafka topic")
+	kafkaBrokers  = flag.String("brokers", "nats://localhost:4222", "NATS URLs")
+	topicFlag     = flag.String("topic", "", "NATS subject")
 	wsURL         = "wss://advanced-trade-ws.coinbase.com"
 	productIDFlag = flag.String("product-id", "", "Coinbase product id (e.g. BTC-USD or BTC-USDT)")
 	symbolFlag    = flag.String("symbol", symbols.FromEnv("BTCUSDT"), "Coinbase symbol (e.g. BTCUSDT)")
@@ -72,14 +72,10 @@ func main() {
 	}
 	topic := *topicFlag
 	if topic == "" {
-		if symbolNorm == "BTCUSDT" || symbolNorm == "BTCUSD" {
-			topic = "coinbase_volume"
-		} else {
-			topic = "coinbase_" + symbols.Lower(symbolNorm) + "_volume"
-		}
+		topic = "coinbase_" + symbols.Lower(symbolNorm) + "_volume"
 	}
 
-	producer := kafka.NewProducer(brokers, topic)
+	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
 
 	log.Printf("Starting Coinbase Volume Follower. Brokers: %v, Topic: %s, Product: %s", brokers, topic, productID)
@@ -108,7 +104,7 @@ func main() {
 		}
 		log.Printf("%s\n", b)
 		if err := producer.WriteMessage(nil, b); err != nil {
-			log.Printf("Kafka write error: %v", err)
+			log.Printf("NATS publish error: %v", err)
 		}
 	}
 

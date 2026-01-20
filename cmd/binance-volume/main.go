@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"market_follower/internal/kafka"
+	"market_follower/internal/nats"
 	"market_follower/internal/models"
 	"market_follower/internal/symbols"
 
@@ -18,8 +18,8 @@ import (
 )
 
 var (
-	kafkaBrokers = flag.String("brokers", "localhost:9092", "Kafka brokers")
-	topicFlag    = flag.String("topic", "", "Kafka topic")
+	kafkaBrokers = flag.String("brokers", "nats://localhost:4222", "NATS URLs")
+	topicFlag    = flag.String("topic", "", "NATS subject")
 	symbolFlag   = flag.String("symbol", symbols.FromEnv("BTCUSDT"), "Binance symbol (e.g. BTCUSDT)")
 )
 
@@ -34,16 +34,12 @@ func main() {
 	symbolNorm := symbols.Normalize(symbol)
 	symbolLower := symbols.Lower(symbolNorm)
 	if topic == "" {
-		if symbolNorm == "BTCUSDT" || symbolNorm == "BTCUSD" {
-			topic = "binance_volume"
-		} else {
-			topic = fmt.Sprintf("binance_%s_volume", symbolLower)
-		}
+		topic = fmt.Sprintf("binance_%s_volume", symbolLower)
 	}
 	streamSymbol := symbols.BinanceStreamSymbol(symbolNorm)
 	wsURL := fmt.Sprintf("wss://stream.binance.com:9443/ws/%s@kline_1s", streamSymbol)
 
-	producer := kafka.NewProducer(brokers, topic)
+	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
 
 	log.Printf("Starting Binance Volume Follower. Brokers: %v, Topic: %s, Symbol: %s", brokers, topic, symbol)
@@ -92,7 +88,7 @@ func main() {
 
 				err = producer.WriteMessage(nil, outputBytes)
 				if err != nil {
-					log.Printf("Kafka write error: %v", err)
+					log.Printf("NATS publish error: %v", err)
 				}
 			}
 		}()

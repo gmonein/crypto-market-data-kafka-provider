@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"market_follower/internal/kafka"
+	"market_follower/internal/nats"
 	"market_follower/internal/models"
 	"market_follower/internal/symbols"
 
@@ -17,8 +17,8 @@ import (
 )
 
 var (
-	kafkaBrokers = flag.String("brokers", "localhost:9092", "Kafka brokers")
-	topicFlag    = flag.String("topic", "", "Kafka topic")
+	kafkaBrokers = flag.String("brokers", "nats://localhost:4222", "NATS URLs")
+	topicFlag    = flag.String("topic", "", "NATS subject")
 	symbolFlag   = flag.String("symbol", symbols.FromEnv("BTCUSDT"), "Chainlink symbol (e.g. BTCUSDT)")
 	wsURL        = "wss://ws-live-data.polymarket.com"
 )
@@ -57,7 +57,7 @@ func main() {
 		topic = symbols.DefaultTopic("chainlink", symbolNorm, "chainlink_btcusd")
 	}
 
-	producer := kafka.NewProducer(brokers, topic)
+	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
 
 	log.Printf("Starting Chainlink Price Follower. Brokers: %v, Topic: %s, Symbol: %s", brokers, topic, chainlinkSymbol)

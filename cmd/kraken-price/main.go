@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"market_follower/internal/kafka"
+	"market_follower/internal/nats"
 	"market_follower/internal/models"
 	"market_follower/internal/symbols"
 
@@ -18,8 +18,8 @@ import (
 )
 
 var (
-	kafkaBrokers = flag.String("brokers", "localhost:9092", "Kafka brokers")
-	topicFlag    = flag.String("topic", "", "Kafka topic")
+	kafkaBrokers = flag.String("brokers", "nats://localhost:4222", "NATS URLs")
+	topicFlag    = flag.String("topic", "", "NATS subject")
 	wsURL        = "wss://ws.kraken.com"
 	pairFlag     = flag.String("pair", "", "Kraken pair (e.g. XBT/USD)")
 	symbolFlag   = flag.String("symbol", symbols.FromEnv("BTCUSDT"), "Kraken symbol (e.g. BTCUSDT)")
@@ -49,7 +49,7 @@ func main() {
 		topic = symbols.DefaultTopic("kraken", symbolNorm, "kraken_btcusd")
 	}
 
-	producer := kafka.NewProducer(brokers, topic)
+	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
 
 	log.Printf("Starting Kraken Price Follower. Brokers: %v, Topic: %s, Pair: %s", brokers, topic, pair)

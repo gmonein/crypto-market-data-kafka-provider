@@ -1,197 +1,121 @@
-version: "3.9"
-
 x-market-data-common: &market-data-common
   build: .
-  depends_on:
-    init-redpanda:
-      condition: service_completed_successfully
   restart: always
-
-x-symbol-env: &symbol-env
-  SYMBOL: ${MARKET_SYMBOL:-BTCUSDT}
+  profiles:
+    - followers
+  networks:
+    - pm-net
+  environment:
+    SYMBOL: ${MARKET_SYMBOL:-BTCUSDT}
+    ORDERBOOK_OUTPUT: ${ORDERBOOK_OUTPUT:-features}
+    COINBASE_API_KEY: ${COINBASE_API_KEY:-}
+    COINBASE_API_SECRET: ${COINBASE_API_SECRET:-}
+    COINBASE_API_PASSPHRASE: ${COINBASE_API_PASSPHRASE:-}
 
 services:
-  redpanda:
-    image: redpandadata/redpanda:latest
-    command:
-      - redpanda
-      - start
-      - --overprovisioned
-      - --smp
-      - "1"
-      - --memory
-      - "1G"
-      - --reserve-memory
-      - "0M"
-      - --node-id
-      - "0"
-      - --check=false
-      - --kafka-addr
-      - internal://0.0.0.0:9092
-      - --advertise-kafka-addr
-      - internal://redpanda:9092
+  nats:
+    image: nats:2.10
+    container_name: pm-market-data-nats
+    command: ["-m", "8222"]
     ports:
-      - "9092:9092"
-    volumes:
-      - ./redpanda-data:/var/lib/redpanda/data
+      - "4222:4222"
+      - "8222:8222"
+    profiles:
+      - infra
+    networks:
+      pm-net:
+        aliases:
+          - nats
     restart: unless-stopped
-
-  redpanda-console:
-    image: redpandadata/console:latest
-    depends_on:
-      redpanda:
-        condition: service_started
-    environment:
-      KAFKA_BROKERS: redpanda:9092
-    ports:
-      - "8080:8080"
-    restart: unless-stopped
-
-  init-redpanda:
-    image: redpandadata/redpanda:latest
-    depends_on:
-      redpanda:
-        condition: service_started
-    environment: *symbol-env
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        SYMBOL="$${SYMBOL:-$${MARKET_SYMBOL:-$${PM_SYMBOL:-BTCUSDT}}}"; \
-        SYMBOL="$$(printf "%s" "$$SYMBOL" | tr '[:lower:]' '[:upper:]' | tr -d '_/ -' )"; \
-        if [ -z "$$SYMBOL" ]; then SYMBOL="BTCUSDT"; fi; \
-        SYMBOL_LOWER="$$(printf "%s" "$$SYMBOL" | tr '[:upper:]' '[:lower:]' )"; \
-        if [ -z "$$SYMBOL_LOWER" ]; then SYMBOL_LOWER="btcusdt"; fi; \
-        BINANCE_TOPIC="binance_$${SYMBOL_LOWER}"; \
-        BINANCE_VOLUME_TOPIC="binance_$${SYMBOL_LOWER}_volume"; \
-        BINANCE_ORDERBOOK_TOPIC="binance_$${SYMBOL_LOWER}_orderbook"; \
-        BYBIT_TOPIC="bybit_$${SYMBOL_LOWER}"; \
-        BYBIT_VOLUME_TOPIC="bybit_$${SYMBOL_LOWER}_volume"; \
-        BYBIT_ORDERBOOK_TOPIC="bybit_$${SYMBOL_LOWER}_orderbook"; \
-        BITGET_TOPIC="bitget_$${SYMBOL_LOWER}"; \
-        BITGET_VOLUME_TOPIC="bitget_$${SYMBOL_LOWER}_volume"; \
-        BITGET_ORDERBOOK_TOPIC="bitget_$${SYMBOL_LOWER}_orderbook"; \
-        OKX_TOPIC="okx_$${SYMBOL_LOWER}"; \
-        OKX_VOLUME_TOPIC="okx_$${SYMBOL_LOWER}_volume"; \
-        OKX_ORDERBOOK_TOPIC="okx_$${SYMBOL_LOWER}_orderbook"; \
-        COINBASE_TOPIC="coinbase_$${SYMBOL_LOWER}"; \
-        COINBASE_VOLUME_TOPIC="coinbase_$${SYMBOL_LOWER}_volume"; \
-        COINBASE_ORDERBOOK_TOPIC="coinbase_$${SYMBOL_LOWER}_orderbook"; \
-        KRAKEN_TOPIC="kraken_$${SYMBOL_LOWER}"; \
-        KRAKEN_VOLUME_TOPIC="kraken_$${SYMBOL_LOWER}_volume"; \
-        KRAKEN_ORDERBOOK_TOPIC="kraken_$${SYMBOL_LOWER}_orderbook"; \
-        CHAINLINK_TOPIC="chainlink_$${SYMBOL_LOWER}"; \
-        rpk topic create "$$BINANCE_TOPIC" -X brokers=redpanda:9092 || true; \
-        rpk topic create "$$BINANCE_VOLUME_TOPIC" -X brokers=redpanda:9092 || true; \
-        rpk topic create "$$BINANCE_ORDERBOOK_TOPIC" -X brokers=redpanda:9092 || true; \
-        rpk topic create "$$BYBIT_TOPIC" -X brokers=redpanda:9092 || true; \
-        rpk topic create "$$BYBIT_VOLUME_TOPIC" -X brokers=redpanda:9092 || true; \
-        rpk topic create "$$BYBIT_ORDERBOOK_TOPIC" -X brokers=redpanda:9092 || true; \
-        rpk topic create "$$BITGET_TOPIC" -X brokers=redpanda:9092 || true; \
-        rpk topic create "$$BITGET_VOLUME_TOPIC" -X brokers=redpanda:9092 || true; \
-        rpk topic create "$$BITGET_ORDERBOOK_TOPIC" -X brokers=redpanda:9092 || true; \
-        rpk topic create "$$OKX_TOPIC" -X brokers=redpanda:9092 || true; \
-        rpk topic create "$$OKX_VOLUME_TOPIC" -X brokers=redpanda:9092 || true; \
-        rpk topic create "$$OKX_ORDERBOOK_TOPIC" -X brokers=redpanda:9092 || true; \
-        rpk topic create "$$COINBASE_TOPIC" -X brokers=redpanda:9092 || true; \
-        rpk topic create "$$COINBASE_VOLUME_TOPIC" -X brokers=redpanda:9092 || true; \
-        rpk topic create "$$COINBASE_ORDERBOOK_TOPIC" -X brokers=redpanda:9092 || true; \
-        rpk topic create "$$KRAKEN_TOPIC" -X brokers=redpanda:9092 || true; \
-        rpk topic create "$$KRAKEN_VOLUME_TOPIC" -X brokers=redpanda:9092 || true; \
-        rpk topic create "$$KRAKEN_ORDERBOOK_TOPIC" -X brokers=redpanda:9092 || true; \
-        rpk topic create "$$CHAINLINK_TOPIC" -X brokers=redpanda:9092 || true; \
 
   binance-price:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["binance-price", "-brokers", "redpanda:9092"]
+    command: ["binance-price", "-brokers", "nats://nats:4222"]
 
   binance-volume:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["binance-volume", "-brokers", "redpanda:9092"]
+    command: ["binance-volume", "-brokers", "nats://nats:4222"]
 
   binance-orderbook:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["binance-orderbook", "-brokers", "redpanda:9092"]
+    command: ["binance-orderbook", "-brokers", "nats://nats:4222", "-depth", "10"]
 
   bybit-price:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["bybit-price", "-brokers", "redpanda:9092"]
+    command: ["bybit-price", "-brokers", "nats://nats:4222"]
 
   bybit-volume:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["bybit-volume", "-brokers", "redpanda:9092"]
+    command: ["bybit-volume", "-brokers", "nats://nats:4222"]
 
   bybit-orderbook:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["bybit-orderbook", "-brokers", "redpanda:9092"]
+    command: ["bybit-orderbook", "-brokers", "nats://nats:4222"]
 
   bitget-price:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["bitget-price", "-brokers", "redpanda:9092"]
+    command: ["bitget-price", "-brokers", "nats://nats:4222"]
 
   bitget-volume:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["bitget-volume", "-brokers", "redpanda:9092"]
+    command: ["bitget-volume", "-brokers", "nats://nats:4222"]
 
   bitget-orderbook:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["bitget-orderbook", "-brokers", "redpanda:9092"]
+    command: ["bitget-orderbook", "-brokers", "nats://nats:4222", "-depth", "5"]
 
   okx-price:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["okx-price", "-brokers", "redpanda:9092"]
+    command: ["okx-price", "-brokers", "nats://nats:4222"]
 
   okx-volume:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["okx-volume", "-brokers", "redpanda:9092"]
+    command: ["okx-volume", "-brokers", "nats://nats:4222"]
 
   okx-orderbook:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["okx-orderbook", "-brokers", "redpanda:9092"]
+    command: ["okx-orderbook", "-brokers", "nats://nats:4222", "-depth", "5"]
 
   coinbase-price:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["coinbase-price", "-brokers", "redpanda:9092"]
+    command: ["coinbase-price", "-brokers", "nats://nats:4222"]
 
   coinbase-volume:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["coinbase-volume", "-brokers", "redpanda:9092"]
+    command: ["coinbase-volume", "-brokers", "nats://nats:4222"]
 
   coinbase-orderbook:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["coinbase-orderbook", "-brokers", "redpanda:9092"]
+    command: ["coinbase-orderbook", "-brokers", "nats://nats:4222", "-depth", "10"]
 
   kraken-price:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["kraken-price", "-brokers", "redpanda:9092"]
+    command: ["kraken-price", "-brokers", "nats://nats:4222"]
 
   kraken-volume:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["kraken-volume", "-brokers", "redpanda:9092"]
+    command: ["kraken-volume", "-brokers", "nats://nats:4222"]
 
   kraken-orderbook:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["kraken-orderbook", "-brokers", "redpanda:9092"]
+    command: ["kraken-orderbook", "-brokers", "nats://nats:4222", "-depth", "10"]
 
   chainlink-price:
     <<: *market-data-common
-    environment: *symbol-env
-    command: ["chainlink-price", "-brokers", "redpanda:9092"]
+    command: ["chainlink-price", "-brokers", "nats://nats:4222"]
+
+  coinbase-usdtusd:
+    <<: *market-data-common
+    profiles:
+      - infra
+    environment:
+      SYMBOL: USDTUSD
+      ORDERBOOK_OUTPUT: ${ORDERBOOK_OUTPUT:-features}
+      COINBASE_API_KEY: ${COINBASE_API_KEY:-}
+      COINBASE_API_SECRET: ${COINBASE_API_SECRET:-}
+      COINBASE_API_PASSPHRASE: ${COINBASE_API_PASSPHRASE:-}
+    command: ["coinbase-price", "-brokers", "nats://nats:4222", "-symbol", "USDTUSD"]
+
+networks:
+  pm-net:
+    external: true

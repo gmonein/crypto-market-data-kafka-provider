@@ -54,9 +54,6 @@ func splitSymbol(symbol string) (string, string) {
 
 func DefaultTopic(exchange, symbol, legacy string) string {
 	s := normalize(symbol)
-	if legacy != "" && (s == "BTCUSDT" || s == "BTCUSD") {
-		return legacy
-	}
 	if s == "" {
 		return legacy
 	}

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"market_follower/internal/kafka"
+	"market_follower/internal/nats"
 	"market_follower/internal/models"
 	"market_follower/internal/symbols"
 
@@ -19,8 +19,8 @@ import (
 )
 
 var (
-	kafkaBrokers  = flag.String("brokers", "localhost:9092", "Kafka brokers")
-	topicFlag     = flag.String("topic", "", "Kafka topic")
+	kafkaBrokers  = flag.String("brokers", "nats://localhost:4222", "NATS URLs")
+	topicFlag     = flag.String("topic", "", "NATS subject")
 	wsURL         = "wss://advanced-trade-ws.coinbase.com"
 	productIDFlag = flag.String("product-id", "", "Coinbase product id (e.g. BTC-USD or BTC-USDT)")
 	symbolFlag    = flag.String("symbol", symbols.FromEnv("BTCUSDT"), "Coinbase symbol (e.g. BTCUSDT)")
@@ -76,7 +76,7 @@ func main() {
 		topic = symbols.DefaultTopic("coinbase", symbolNorm, "coinbase_btcusd")
 	}
 
-	producer := kafka.NewProducer(brokers, topic)
+	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
 
 	log.Printf("Starting Coinbase Price Follower (Heartbeat Sync). Brokers: %v, Topic: %s, Product: %s", brokers, topic, productID)
@@ -134,7 +134,7 @@ func main() {
 		go func() {
 			defer close(done)
 
-			sendToKafka := func(p, bb, ba, bq, aq string, t int64) {
+			sendToNats := func(p, bb, ba, bq, aq string, t int64) {
 				if p == "" {
 					return
 				}
@@ -203,7 +203,7 @@ func main() {
 							mu.Unlock()
 
 							// Emit on Ticker
-							sendToKafka(calcPrice, t.BestBid, t.BestAsk, t.BestBidQuantity, t.BestAskQuantity, currentTs)
+							sendToNats(calcPrice, t.BestBid, t.BestAsk, t.BestBidQuantity, t.BestAskQuantity, currentTs)
 						}
 					}
 				} else if baseMsg.Channel == "heartbeat" {
@@ -217,7 +217,7 @@ func main() {
 					t := lastTime
 					mu.Unlock()
 
-					sendToKafka(p, bb, ba, bq, aq, t)
+					sendToNats(p, bb, ba, bq, aq, t)
 				}
 			}
 		}()
