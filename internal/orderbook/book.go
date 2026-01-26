@@ -75,6 +75,43 @@ func (b *Book) Snapshot(depth int) Snapshot {
 	return snap
 }
 
+func (b *Book) BestBidAsk() (float64, float64, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if len(b.bids) == 0 || len(b.asks) == 0 {
+		return 0, 0, false
+	}
+
+	bestBid := 0.0
+	bestAsk := 0.0
+	first := true
+	for _, lvl := range b.bids {
+		if first || lvl.price > bestBid {
+			bestBid = lvl.price
+		}
+		first = false
+	}
+
+	first = true
+	for _, lvl := range b.asks {
+		if first || lvl.price < bestAsk {
+			bestAsk = lvl.price
+		}
+		first = false
+	}
+
+	return bestBid, bestAsk, true
+}
+
+func (b *Book) IsCrossed() bool {
+	bestBid, bestAsk, ok := b.BestBidAsk()
+	if !ok {
+		return false
+	}
+	return bestBid > bestAsk
+}
+
 func applySnapshotLevels(dst map[string]level, levels [][]string) {
 	for _, lvl := range levels {
 		if len(lvl) < 2 {

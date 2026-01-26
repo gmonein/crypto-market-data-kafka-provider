@@ -4,9 +4,9 @@
 
 This repo ingests spot market data and publishes it to Redpanda:
 
-- Price followers: Binance, Bitget, Bybit, OKX, Coinbase, Kraken
-- Volume followers: Binance, Bitget, Bybit, OKX, Coinbase, Kraken
-- Orderbook followers: Binance, Bitget, Bybit, OKX, Coinbase, Kraken
+- Price followers: Binance, Bitget, Bybit, OKX, Coinbase, Kraken, Gate.io, MEXC (contract), KuCoin Futures
+- Volume followers: Binance, Bitget, Bybit, OKX, Coinbase, Kraken, Gate.io, MEXC (contract), KuCoin Futures
+- Orderbook followers: Binance, Bitget, Bybit, OKX, Coinbase, Kraken, Gate.io, MEXC (contract), KuCoin Futures
 - Chainlink price follower (Polymarket RTDS)
 
 ## Symbol selection
@@ -24,6 +24,9 @@ Example (BTCUSDT):
 - `binance_btcusdt`, `binance_btcusdt_volume`, `binance_btcusdt_orderbook`
 - `bybit_btcusdt`, `bybit_btcusdt_volume`, `bybit_btcusdt_orderbook`
 - `bitget_btcusdt`, `bitget_btcusdt_volume`, `bitget_btcusdt_orderbook`
+- `gate_btcusdt`, `gate_btcusdt_volume`, `gate_btcusdt_orderbook`
+- `mexc_btcusdt`, `mexc_btcusdt_volume`, `mexc_btcusdt_orderbook`
+- `kucoinfutures_btcusdt`, `kucoinfutures_btcusdt_volume`, `kucoinfutures_btcusdt_orderbook`
 - `okx_btcusdt`, `okx_btcusdt_volume`, `okx_btcusdt_orderbook`
 - `coinbase_btcusdt`, `coinbase_btcusdt_volume`, `coinbase_btcusdt_orderbook`
 - `kraken_btcusdt`, `kraken_btcusdt_volume`, `kraken_btcusdt_orderbook`
@@ -34,6 +37,9 @@ Example (ETHUSDT):
 - `binance_ethusdt`, `binance_ethusdt_volume`, `binance_ethusdt_orderbook`
 - `bybit_ethusdt`, `bybit_ethusdt_volume`, `bybit_ethusdt_orderbook`
 - `bitget_ethusdt`, `bitget_ethusdt_volume`, `bitget_ethusdt_orderbook`
+- `gate_ethusdt`, `gate_ethusdt_volume`, `gate_ethusdt_orderbook`
+- `mexc_ethusdt`, `mexc_ethusdt_volume`, `mexc_ethusdt_orderbook`
+- `kucoinfutures_ethusdt`, `kucoinfutures_ethusdt_volume`, `kucoinfutures_ethusdt_orderbook`
 - `okx_ethusdt`, `okx_ethusdt_volume`, `okx_ethusdt_orderbook`
 - `coinbase_ethusdt`, `coinbase_ethusdt_volume`, `coinbase_ethusdt_orderbook`
 - `kraken_ethusdt`, `kraken_ethusdt_volume`, `kraken_ethusdt_orderbook`

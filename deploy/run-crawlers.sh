@@ -30,9 +30,9 @@ fi
 case "$action" in
   up)
     COMPOSE_PROJECT_NAME="$infra_project" \
-      docker compose -f "$compose_file" --profile infra up -d
+      docker compose -f "$compose_file" --profile infra up -d --build
     COMPOSE_PROJECT_NAME="$project_name" \
-      docker compose -f "$compose_file" --profile followers up -d
+      docker compose -f "$compose_file" --profile followers up -d --build
     ;;
   down)
     COMPOSE_PROJECT_NAME="$project_name" \
@@ -47,9 +47,9 @@ case "$action" in
     COMPOSE_PROJECT_NAME="$project_name" \
       docker compose -f "$compose_file" --profile followers down
     COMPOSE_PROJECT_NAME="$infra_project" \
-      docker compose -f "$compose_file" --profile infra up -d
+      docker compose -f "$compose_file" --profile infra up -d --build
     COMPOSE_PROJECT_NAME="$project_name" \
-      docker compose -f "$compose_file" --profile followers up -d
+      docker compose -f "$compose_file" --profile followers up -d --build
     ;;
   *)
     echo "usage: run-crawlers.sh <symbol> [up|down|restart]" >&2

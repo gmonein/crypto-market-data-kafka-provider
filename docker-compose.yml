@@ -1,3 +1,10 @@
+x-market-data-env: &market-data-env
+  SYMBOL: ${MARKET_SYMBOL:-BTCUSDT}
+  ORDERBOOK_OUTPUT: ${ORDERBOOK_OUTPUT:-features}
+  COINBASE_API_KEY: ${COINBASE_API_KEY:-}
+  COINBASE_API_SECRET: ${COINBASE_API_SECRET:-}
+  COINBASE_API_PASSPHRASE: ${COINBASE_API_PASSPHRASE:-}
+
 x-market-data-common: &market-data-common
   build: .
   restart: always
@@ -6,11 +13,7 @@ x-market-data-common: &market-data-common
   networks:
     - pm-net
   environment:
-    SYMBOL: ${MARKET_SYMBOL:-BTCUSDT}
-    ORDERBOOK_OUTPUT: ${ORDERBOOK_OUTPUT:-features}
-    COINBASE_API_KEY: ${COINBASE_API_KEY:-}
-    COINBASE_API_SECRET: ${COINBASE_API_SECRET:-}
-    COINBASE_API_PASSPHRASE: ${COINBASE_API_PASSPHRASE:-}
+    <<: *market-data-env
 
 services:
   nats:
@@ -64,6 +67,42 @@ services:
     <<: *market-data-common
     command: ["bitget-orderbook", "-brokers", "nats://nats:4222", "-depth", "5"]
 
+  gate-price:
+    <<: *market-data-common
+    command: ["gate-price", "-brokers", "nats://nats:4222"]
+
+  gate-volume:
+    <<: *market-data-common
+    command: ["gate-volume", "-brokers", "nats://nats:4222"]
+
+  gate-orderbook:
+    <<: *market-data-common
+    command: ["gate-orderbook", "-brokers", "nats://nats:4222", "-depth", "10"]
+
+  mexc-price:
+    <<: *market-data-common
+    command: ["mexc-price", "-brokers", "nats://nats:4222"]
+
+  mexc-volume:
+    <<: *market-data-common
+    command: ["mexc-volume", "-brokers", "nats://nats:4222"]
+
+  mexc-orderbook:
+    <<: *market-data-common
+    command: ["mexc-orderbook", "-brokers", "nats://nats:4222", "-depth", "20"]
+
+  kucoin-futures-price:
+    <<: *market-data-common
+    command: ["kucoin-futures-price", "-brokers", "nats://nats:4222"]
+
+  kucoin-futures-volume:
+    <<: *market-data-common
+    command: ["kucoin-futures-volume", "-brokers", "nats://nats:4222"]
+
+  kucoin-futures-orderbook:
+    <<: *market-data-common
+    command: ["kucoin-futures-orderbook", "-brokers", "nats://nats:4222", "-depth", "50"]
+
   okx-price:
     <<: *market-data-common
     command: ["okx-price", "-brokers", "nats://nats:4222"]
@@ -86,6 +125,10 @@ services:
 
   coinbase-orderbook:
     <<: *market-data-common
+    environment:
+      <<: *market-data-env
+      ORDERBOOK_MODE: ${COINBASE_ORDERBOOK_MODE:-rest}
+      ORDERBOOK_REST_INTERVAL_MS: ${COINBASE_ORDERBOOK_REST_INTERVAL_MS:-1000}
     command: ["coinbase-orderbook", "-brokers", "nats://nats:4222", "-depth", "10"]
 
   kraken-price:
@@ -98,6 +141,10 @@ services:
 
   kraken-orderbook:
     <<: *market-data-common
+    environment:
+      <<: *market-data-env
+      ORDERBOOK_MODE: ${KRAKEN_ORDERBOOK_MODE:-rest}
+      ORDERBOOK_REST_INTERVAL_MS: ${KRAKEN_ORDERBOOK_REST_INTERVAL_MS:-1000}
     command: ["kraken-orderbook", "-brokers", "nats://nats:4222", "-depth", "10"]
 
   chainlink-price:

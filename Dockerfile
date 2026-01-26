@@ -19,12 +19,21 @@ RUN go build -o /bin/bybit-price ./cmd/bybit-price
 RUN go build -o /bin/bybit-volume ./cmd/bybit-volume
 RUN go build -o /bin/bitget-price ./cmd/bitget-price
 RUN go build -o /bin/bitget-volume ./cmd/bitget-volume
+RUN go build -o /bin/gate-price ./cmd/gate-price
+RUN go build -o /bin/gate-volume ./cmd/gate-volume
+RUN go build -o /bin/mexc-price ./cmd/mexc-price
+RUN go build -o /bin/mexc-volume ./cmd/mexc-volume
+RUN go build -o /bin/kucoin-futures-price ./cmd/kucoin-futures-price
+RUN go build -o /bin/kucoin-futures-volume ./cmd/kucoin-futures-volume
 RUN go build -o /bin/binance-orderbook ./cmd/binance-orderbook
 RUN go build -o /bin/bybit-orderbook ./cmd/bybit-orderbook
 RUN go build -o /bin/bitget-orderbook ./cmd/bitget-orderbook
 RUN go build -o /bin/okx-orderbook ./cmd/okx-orderbook
 RUN go build -o /bin/coinbase-orderbook ./cmd/coinbase-orderbook
 RUN go build -o /bin/kraken-orderbook ./cmd/kraken-orderbook
+RUN go build -o /bin/gate-orderbook ./cmd/gate-orderbook
+RUN go build -o /bin/mexc-orderbook ./cmd/mexc-orderbook
+RUN go build -o /bin/kucoin-futures-orderbook ./cmd/kucoin-futures-orderbook
 RUN go build -o /bin/chainlink-price ./cmd/chainlink-price
 
 FROM alpine:latest
@@ -43,12 +52,21 @@ COPY --from=builder /bin/bybit-price .
 COPY --from=builder /bin/bybit-volume .
 COPY --from=builder /bin/bitget-price .
 COPY --from=builder /bin/bitget-volume .
+COPY --from=builder /bin/gate-price .
+COPY --from=builder /bin/gate-volume .
+COPY --from=builder /bin/mexc-price .
+COPY --from=builder /bin/mexc-volume .
+COPY --from=builder /bin/kucoin-futures-price .
+COPY --from=builder /bin/kucoin-futures-volume .
 COPY --from=builder /bin/binance-orderbook .
 COPY --from=builder /bin/bybit-orderbook .
 COPY --from=builder /bin/bitget-orderbook .
 COPY --from=builder /bin/okx-orderbook .
 COPY --from=builder /bin/coinbase-orderbook .
 COPY --from=builder /bin/kraken-orderbook .
+COPY --from=builder /bin/gate-orderbook .
+COPY --from=builder /bin/mexc-orderbook .
+COPY --from=builder /bin/kucoin-futures-orderbook .
 COPY --from=builder /bin/chainlink-price .
 
 COPY entrypoint.sh .

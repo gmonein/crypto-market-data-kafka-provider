@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"market_follower/internal/features"
-	"market_follower/internal/nats"
 	"market_follower/internal/models"
+	"market_follower/internal/nats"
 	"market_follower/internal/orderbook"
 	"market_follower/internal/symbols"
 
@@ -94,11 +94,24 @@ func main() {
 		depth = 50
 	}
 	outputMode := orderbook.OutputMode()
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("ORDERBOOK_MODE")))
+	if mode == "" {
+		mode = "ws"
+	}
+	if mode != "ws" && mode != "rest" {
+		mode = "ws"
+	}
+	restInterval := time.Second
+	if raw := strings.TrimSpace(os.Getenv("ORDERBOOK_REST_INTERVAL_MS")); raw != "" {
+		if ms, err := strconv.ParseInt(raw, 10, 64); err == nil && ms > 0 {
+			restInterval = time.Duration(ms) * time.Millisecond
+		}
+	}
 
 	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
 
-	log.Printf("Starting Coinbase Orderbook Follower. Brokers: %v, Topic: %s, Product: %s, Output: %s", brokers, topic, productID, outputMode)
+	log.Printf("Starting Coinbase Orderbook Follower. Brokers: %v, Topic: %s, Product: %s, Output: %s, Mode: %s, RestInterval: %s", brokers, topic, productID, outputMode, mode, restInterval)
 
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
@@ -358,37 +371,50 @@ func main() {
 		return parseRawLevels(payload.Bids), parseRawLevels(payload.Asks), payload.Sequence, ts, nil
 	}
 
+	pollSnapshot := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		bids, asks, seq, ts, err := fetchSnapshot(ctx)
+		cancel()
+		if err != nil {
+			log.Printf("REST snapshot error: %v", err)
+			return
+		}
+		if len(bids) == 0 && len(asks) == 0 {
+			return
+		}
+		applySnapshot(bids, asks, seq, ts, true)
+	}
+
 	go func() {
-		ticker := time.NewTicker(time.Second)
+		ticker := time.NewTicker(restInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-stop:
 				return
 			case <-ticker.C:
-				stateMu.Lock()
-				ready := bookReady
-				stateMu.Unlock()
-				if ready {
-					last := lastWSAt.Load()
-					if last != 0 && time.Since(time.Unix(0, last)) < 2*time.Second {
-						continue
+				if mode != "rest" {
+					stateMu.Lock()
+					ready := bookReady
+					stateMu.Unlock()
+					if ready {
+						last := lastWSAt.Load()
+						if last != 0 && time.Since(time.Unix(0, last)) < 2*time.Second {
+							continue
+						}
 					}
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-				bids, asks, seq, ts, err := fetchSnapshot(ctx)
-				cancel()
-				if err != nil {
-					log.Printf("REST snapshot error: %v", err)
-					continue
-				}
-				if len(bids) == 0 && len(asks) == 0 {
-					continue
-				}
-				applySnapshot(bids, asks, seq, ts, true)
+				pollSnapshot()
 			}
 		}
 	}()
+
+	if mode == "rest" {
+		<-interrupt
+		log.Println("Interrupt received, shutting down...")
+		closeStop()
+		return
+	}
 
 	for {
 		conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)

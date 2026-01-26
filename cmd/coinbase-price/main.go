@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"market_follower/internal/nats"
 	"market_follower/internal/models"
+	"market_follower/internal/nats"
 	"market_follower/internal/symbols"
 
 	"github.com/gorilla/websocket"
@@ -79,7 +79,7 @@ func main() {
 	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
 
-	log.Printf("Starting Coinbase Price Follower (Heartbeat Sync). Brokers: %v, Topic: %s, Product: %s", brokers, topic, productID)
+	log.Printf("Starting Coinbase Price Follower. Brokers: %v, Topic: %s, Product: %s", brokers, topic, productID)
 
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
@@ -113,18 +113,6 @@ func main() {
 		}
 		if err := conn.WriteJSON(subTicker); err != nil {
 			log.Printf("Subscribe Ticker error: %v", err)
-			conn.Close()
-			continue
-		}
-
-		// Subscribe to Heartbeat
-		subHeartbeat := SubscribeMessage{
-			Type:       "subscribe",
-			ProductIDs: []string{productID},
-			Channel:    "heartbeat",
-		}
-		if err := conn.WriteJSON(subHeartbeat); err != nil {
-			log.Printf("Subscribe Heartbeat error: %v", err)
 			conn.Close()
 			continue
 		}
@@ -171,18 +159,21 @@ func main() {
 					}
 					if len(events) > 0 && len(events[0].Tickers) > 0 {
 						t := events[0].Tickers[0]
-						if t.Price != "" {
-							// Calculate weighted mid price
-							bb, _ := strconv.ParseFloat(t.BestBid, 64)
-							ba, _ := strconv.ParseFloat(t.BestAsk, 64)
+						if t.BestBid != "" && t.BestAsk != "" {
+							// Calculate weighted midpoint using bid/ask sizes when available.
+							bb, errBid := strconv.ParseFloat(t.BestBid, 64)
+							ba, errAsk := strconv.ParseFloat(t.BestAsk, 64)
+							if errBid != nil || errAsk != nil || bb <= 0 || ba <= 0 {
+								continue
+							}
 							bq, _ := strconv.ParseFloat(t.BestBidQuantity, 64)
 							aq, _ := strconv.ParseFloat(t.BestAskQuantity, 64)
 
-							calcPrice := t.Price
+							val := (bb + ba) / 2
 							if (bq + aq) > 0 {
-								val := (bb*aq + ba*bq) / (bq + aq)
-								calcPrice = strconv.FormatFloat(val, 'f', 2, 64)
+								val = (bb*aq + ba*bq) / (bq + aq)
 							}
+							calcPrice := strconv.FormatFloat(val, 'f', 2, 64)
 
 							// Parse timestamp
 							var currentTs int64

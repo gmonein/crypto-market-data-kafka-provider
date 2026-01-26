@@ -106,3 +106,37 @@ func ChainlinkSymbol(symbol string) string {
 	}
 	return strings.ToLower(base) + "/usd"
 }
+
+func GateSpotSymbol(symbol string) string {
+	base, quote := splitSymbol(symbol)
+	if base == "" || quote == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s_%s", base, quote)
+}
+
+func MexcFuturesSymbol(symbol string) string {
+	base, quote := splitSymbol(symbol)
+	if base == "" || quote == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s_%s", base, quote)
+}
+
+func KucoinFuturesSymbol(symbol string) string {
+	base, quote := splitSymbol(symbol)
+	if base == "" || quote == "" {
+		return ""
+	}
+	if base == "BTC" {
+		base = "XBT"
+	}
+	switch quote {
+	case "USDT":
+		return base + "USDTM"
+	case "USD":
+		return base + "USDM"
+	default:
+		return base + quote
+	}
+}

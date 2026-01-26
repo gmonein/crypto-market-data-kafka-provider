@@ -4,9 +4,9 @@ Market-data ingestion for Polymarket trading. This repo publishes exchange price
 
 ## What is in this repo
 
-- Exchange price followers: `binance`, `bitget`, `bybit`, `okx`, `coinbase`, `kraken`
-- Exchange volume followers: `binance`, `bitget`, `bybit`, `okx`, `coinbase`, `kraken`
-- Exchange orderbook followers (depth): `binance`, `bitget`, `bybit`, `okx`, `coinbase`, `kraken`
+- Exchange price followers: `binance`, `bitget`, `bybit`, `okx`, `coinbase`, `kraken`, `gate`, `mexc` (contract), `kucoin-futures`
+- Exchange volume followers: `binance`, `bitget`, `bybit`, `okx`, `coinbase`, `kraken`, `gate`, `mexc` (contract), `kucoin-futures`
+- Exchange orderbook followers (depth): `binance`, `bitget`, `bybit`, `okx`, `coinbase`, `kraken`, `gate`, `mexc` (contract), `kucoin-futures`
 - Chainlink price follower (Polymarket RTDS)
 
 Note: `polymarket-positions` moved to `pm-execution` (wallet execution/monitoring).
@@ -43,6 +43,9 @@ Example (ETHUSDT):
 - `binance_ethusdt`, `binance_ethusdt_volume`, `binance_ethusdt_orderbook`
 - `bybit_ethusdt`, `bybit_ethusdt_volume`, `bybit_ethusdt_orderbook`
 - `bitget_ethusdt`, `bitget_ethusdt_volume`, `bitget_ethusdt_orderbook`
+- `gate_ethusdt`, `gate_ethusdt_volume`, `gate_ethusdt_orderbook`
+- `mexc_ethusdt`, `mexc_ethusdt_volume`, `mexc_ethusdt_orderbook`
+- `kucoinfutures_ethusdt`, `kucoinfutures_ethusdt_volume`, `kucoinfutures_ethusdt_orderbook`
 - `okx_ethusdt`, `okx_ethusdt_volume`, `okx_ethusdt_orderbook`
 - `coinbase_ethusdt`, `coinbase_ethusdt_volume`, `coinbase_ethusdt_orderbook`
 - `kraken_ethusdt`, `kraken_ethusdt_volume`, `kraken_ethusdt_orderbook`
@@ -70,6 +73,7 @@ SYMBOL=ETHUSDT go run ./cmd/binance-price -brokers nats://localhost:4222
 ## Notes / limitations
 
 - Exchange orderbook followers emit full top-N snapshots on each update (bids/asks arrays) and fall back to REST polling during WS stalls.
+- Set `ORDERBOOK_MODE=rest` to use REST polling only; adjust polling with `ORDERBOOK_REST_INTERVAL_MS` (default 1000ms). Coinbase/Kraken orderbooks are configured to use REST in `docker-compose.yml`.
 
 ## Specs
 

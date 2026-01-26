@@ -1,22 +1,19 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
-	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"market_follower/internal/features"
-	"market_follower/internal/nats"
 	"market_follower/internal/models"
+	"market_follower/internal/nats"
 	"market_follower/internal/orderbook"
 	"market_follower/internal/symbols"
 
@@ -26,20 +23,81 @@ import (
 var (
 	kafkaBrokers = flag.String("brokers", "nats://localhost:4222", "NATS URLs")
 	topicFlag    = flag.String("topic", "", "NATS subject")
-	wsURL        = flag.String("ws-url", "wss://stream.bybit.com/v5/public/spot", "Bybit WebSocket URL")
-	symbolFlag   = flag.String("symbol", symbols.FromEnv("BTCUSDT"), "Bybit symbol (e.g. BTCUSDT)")
-	depthFlag    = flag.Int("depth", 50, "Bybit orderbook depth (1, 50, 200)")
+	wsURL        = flag.String("ws-url", "wss://contract.mexc.com/edge", "MEXC contract WebSocket URL")
+	symbolFlag   = flag.String("symbol", symbols.FromEnv("BTCUSDT"), "MEXC symbol (e.g. BTCUSDT)")
+	depthFlag    = flag.Int("depth", 20, "MEXC orderbook depth (5, 10, 20)")
 )
 
-type bybitOrderBookEnvelope struct {
-	Topic string `json:"topic"`
-	Type  string `json:"type"`
-	Ts    int64  `json:"ts"`
-	Data  struct {
-		Bids      [][]string `json:"b"`
-		Asks      [][]string `json:"a"`
-		Timestamp int64      `json:"ts"`
+type mexcDepthEnvelope struct {
+	Channel string `json:"channel"`
+	Data    struct {
+		Asks [][]json.RawMessage `json:"asks"`
+		Bids [][]json.RawMessage `json:"bids"`
 	} `json:"data"`
+	Ts json.RawMessage `json:"ts"`
+}
+
+func rawToString(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s, true
+	}
+	var num json.Number
+	if err := json.Unmarshal(raw, &num); err == nil {
+		return num.String(), true
+	}
+	var f float64
+	if err := json.Unmarshal(raw, &f); err == nil {
+		return strconv.FormatFloat(f, 'f', -1, 64), true
+	}
+	return "", false
+}
+
+func rawToInt64(raw json.RawMessage) (int64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var i int64
+	if err := json.Unmarshal(raw, &i); err == nil {
+		return i, true
+	}
+	var f float64
+	if err := json.Unmarshal(raw, &f); err == nil {
+		return int64(f), true
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		if v, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return v, true
+		}
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			return int64(f), true
+		}
+	}
+	return 0, false
+}
+
+func convertLevels(levels [][]json.RawMessage) [][]string {
+	out := make([][]string, 0, len(levels))
+	for _, lvl := range levels {
+		if len(lvl) < 2 {
+			continue
+		}
+		price, ok1 := rawToString(lvl[0])
+		qtyRaw := lvl[1]
+		if len(lvl) >= 3 {
+			qtyRaw = lvl[2]
+		}
+		qty, ok2 := rawToString(qtyRaw)
+		if !ok1 || !ok2 {
+			continue
+		}
+		out = append(out, []string{price, qty})
+	}
+	return out
 }
 
 func main() {
@@ -51,24 +109,27 @@ func main() {
 	}
 	symbolNorm := symbols.Normalize(symbol)
 	symbolLower := symbols.Lower(symbolNorm)
+	subSymbol := symbols.MexcFuturesSymbol(symbolNorm)
+	if subSymbol == "" {
+		log.Fatal("unable to derive MEXC symbol")
+	}
 	topic := *topicFlag
 	if topic == "" {
-		topic = "bybit_" + symbolLower + "_orderbook"
+		topic = "mexc_" + symbolLower + "_orderbook"
 	}
-	subSymbol := symbols.BybitSymbol(symbolNorm)
 	depth := *depthFlag
 	switch depth {
-	case 1, 50, 200:
+	case 5, 10, 20:
 	default:
-		log.Printf("Unsupported depth %d, defaulting to 50", depth)
-		depth = 50
+		log.Printf("Unsupported depth %d, defaulting to 20", depth)
+		depth = 20
 	}
 	outputMode := orderbook.OutputMode()
 
 	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
 
-	log.Printf("Starting Bybit Orderbook Follower. Brokers: %v, Topic: %s, Symbol: %s, Depth: %d, Output: %s", brokers, topic, symbolNorm, depth, outputMode)
+	log.Printf("Starting MEXC Orderbook Follower. Brokers: %v, Topic: %s, Symbol: %s, Depth: %d, Output: %s", brokers, topic, symbolNorm, depth, outputMode)
 
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
@@ -79,10 +140,6 @@ func main() {
 	}
 
 	book := orderbook.New()
-	var lastWSAt atomic.Int64
-	var resyncMu sync.Mutex
-	lastResyncAt := time.Time{}
-	restClient := &http.Client{Timeout: 5 * time.Second}
 
 	emitSnapshot := func(ts int64, snapshot bool) {
 		snap := book.Snapshot(depth)
@@ -136,94 +193,13 @@ func main() {
 		}
 	}
 
-	fetchSnapshot := func(ctx context.Context) ([][]string, [][]string, int64, error) {
-		url := fmt.Sprintf("https://api.bybit.com/v5/market/orderbook?category=spot&symbol=%s&limit=%d", subSymbol, depth)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return nil, nil, 0, err
-		}
-		resp, err := restClient.Do(req)
-		if err != nil {
-			return nil, nil, 0, err
-		}
-		defer resp.Body.Close()
-
-		var payload struct {
-			Result struct {
-				Bids      [][]string `json:"b"`
-				Asks      [][]string `json:"a"`
-				Timestamp int64      `json:"ts"`
-			} `json:"result"`
-			Time int64 `json:"time"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-			return nil, nil, 0, err
-		}
-		ts := payload.Result.Timestamp
-		if ts == 0 {
-			ts = payload.Time
-		}
-		if ts == 0 {
-			ts = time.Now().UnixMilli()
-		}
-		return payload.Result.Bids, payload.Result.Asks, ts, nil
-	}
-
-	resync := func(reason string) {
-		resyncMu.Lock()
-		defer resyncMu.Unlock()
-		if !lastResyncAt.IsZero() && time.Since(lastResyncAt) < time.Second {
-			return
-		}
-		lastResyncAt = time.Now()
-
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		bids, asks, ts, err := fetchSnapshot(ctx)
-		cancel()
-		if err != nil {
-			log.Printf("Bybit resync error (%s): %v", reason, err)
-			return
-		}
-		if len(bids) == 0 && len(asks) == 0 {
-			return
-		}
-		book.ApplySnapshot(bids, asks)
-		emitSnapshot(ts, true)
-		log.Printf("Bybit resync applied (%s)", reason)
-	}
-
-	go func() {
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				last := lastWSAt.Load()
-				if last != 0 && time.Since(time.Unix(0, last)) < 2*time.Second {
-					continue
-				}
-				ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-				bids, asks, ts, err := fetchSnapshot(ctx)
-				cancel()
-				if err != nil {
-					log.Printf("REST snapshot error: %v", err)
-					continue
-				}
-				if len(bids) == 0 && len(asks) == 0 {
-					continue
-				}
-				book.ApplySnapshot(bids, asks)
-				emitSnapshot(ts, true)
-			}
-		}
-	}()
-
 	subscribe := func(conn *websocket.Conn) error {
 		msg := map[string]any{
-			"op":   "subscribe",
-			"args": []string{fmt.Sprintf("orderbook.%d.%s", depth, subSymbol)},
+			"method": "sub.depth.full",
+			"param": map[string]any{
+				"symbol": subSymbol,
+				"limit":  depth,
+			},
 		}
 		return conn.WriteJSON(msg)
 	}
@@ -257,7 +233,7 @@ func main() {
 				case <-done:
 					return
 				case <-pingTicker.C:
-					if err := conn.WriteJSON(map[string]string{"op": "ping"}); err != nil {
+					if err := conn.WriteJSON(map[string]string{"method": "ping"}); err != nil {
 						conn.Close()
 						return
 					}
@@ -270,39 +246,33 @@ func main() {
 			defer conn.Close()
 
 			for {
-				conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 				_, message, err := conn.ReadMessage()
 				if err != nil {
 					log.Printf("Read error: %v", err)
 					return
 				}
 
-				var env bybitOrderBookEnvelope
+				var env mexcDepthEnvelope
 				if err := json.Unmarshal(message, &env); err != nil {
 					continue
 				}
+				if !strings.HasPrefix(env.Channel, "push.depth") {
+					continue
+				}
 
-				ts := env.Ts
+				bids := convertLevels(env.Data.Bids)
+				asks := convertLevels(env.Data.Asks)
+				if len(bids) == 0 && len(asks) == 0 {
+					continue
+				}
+
+				ts, _ := rawToInt64(env.Ts)
 				if ts == 0 {
-					ts = env.Data.Timestamp
-				}
-				if ts == 0 || (len(env.Data.Bids) == 0 && len(env.Data.Asks) == 0) {
-					continue
+					ts = time.Now().UnixMilli()
 				}
 
-				snapshot := strings.EqualFold(env.Type, "snapshot")
-				if snapshot {
-					book.ApplySnapshot(env.Data.Bids, env.Data.Asks)
-				} else {
-					book.ApplyDelta(env.Data.Bids, env.Data.Asks)
-				}
-				if book.IsCrossed() {
-					log.Printf("Bybit book crossed, forcing resync")
-					resync("crossed")
-					continue
-				}
-				emitSnapshot(ts, snapshot)
-				lastWSAt.Store(time.Now().UnixNano())
+				book.ApplySnapshot(bids, asks)
+				emitSnapshot(ts, true)
 			}
 		}()
 

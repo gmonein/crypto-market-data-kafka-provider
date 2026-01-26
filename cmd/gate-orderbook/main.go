@@ -9,14 +9,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"market_follower/internal/features"
-	"market_follower/internal/nats"
 	"market_follower/internal/models"
+	"market_follower/internal/nats"
 	"market_follower/internal/orderbook"
 	"market_follower/internal/symbols"
 
@@ -26,20 +27,72 @@ import (
 var (
 	kafkaBrokers = flag.String("brokers", "nats://localhost:4222", "NATS URLs")
 	topicFlag    = flag.String("topic", "", "NATS subject")
-	wsURL        = flag.String("ws-url", "wss://stream.bybit.com/v5/public/spot", "Bybit WebSocket URL")
-	symbolFlag   = flag.String("symbol", symbols.FromEnv("BTCUSDT"), "Bybit symbol (e.g. BTCUSDT)")
-	depthFlag    = flag.Int("depth", 50, "Bybit orderbook depth (1, 50, 200)")
+	wsURL        = flag.String("ws-url", "wss://api.gateio.ws/ws/v4/", "Gate.io WebSocket URL")
+	symbolFlag   = flag.String("symbol", symbols.FromEnv("BTCUSDT"), "Gate.io symbol (e.g. BTCUSDT)")
+	depthFlag    = flag.Int("depth", 20, "Gate.io orderbook depth")
 )
 
-type bybitOrderBookEnvelope struct {
-	Topic string `json:"topic"`
-	Type  string `json:"type"`
-	Ts    int64  `json:"ts"`
-	Data  struct {
-		Bids      [][]string `json:"b"`
-		Asks      [][]string `json:"a"`
-		Timestamp int64      `json:"ts"`
-	} `json:"data"`
+type gateOrderBookEnvelope struct {
+	Time    int64           `json:"time"`
+	TimeMS  int64           `json:"time_ms"`
+	Channel string          `json:"channel"`
+	Event   string          `json:"event"`
+	Result  json.RawMessage `json:"result"`
+}
+
+type gateOrderBook struct {
+	Bids [][]string      `json:"bids"`
+	Asks [][]string      `json:"asks"`
+	T    json.RawMessage `json:"t"`
+	ID   json.RawMessage `json:"id"`
+}
+
+func parseGateOrderBook(raw json.RawMessage) (gateOrderBook, bool) {
+	if len(raw) == 0 {
+		return gateOrderBook{}, false
+	}
+	var ob gateOrderBook
+	if err := json.Unmarshal(raw, &ob); err != nil {
+		return gateOrderBook{}, false
+	}
+	return ob, true
+}
+
+func rawToInt64(raw json.RawMessage) (int64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var i int64
+	if err := json.Unmarshal(raw, &i); err == nil {
+		return i, true
+	}
+	var f float64
+	if err := json.Unmarshal(raw, &f); err == nil {
+		return int64(f), true
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		if v, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return v, true
+		}
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			return int64(f), true
+		}
+	}
+	return 0, false
+}
+
+func normalizeMillis(v int64) int64 {
+	switch {
+	case v > 1e15:
+		return v / 1e6
+	case v > 1e12:
+		return v
+	case v > 1e9:
+		return v * 1000
+	default:
+		return v
+	}
 }
 
 func main() {
@@ -51,24 +104,24 @@ func main() {
 	}
 	symbolNorm := symbols.Normalize(symbol)
 	symbolLower := symbols.Lower(symbolNorm)
+	subSymbol := symbols.GateSpotSymbol(symbolNorm)
+	if subSymbol == "" {
+		log.Fatal("unable to derive Gate.io symbol")
+	}
 	topic := *topicFlag
 	if topic == "" {
-		topic = "bybit_" + symbolLower + "_orderbook"
+		topic = "gate_" + symbolLower + "_orderbook"
 	}
-	subSymbol := symbols.BybitSymbol(symbolNorm)
 	depth := *depthFlag
-	switch depth {
-	case 1, 50, 200:
-	default:
-		log.Printf("Unsupported depth %d, defaulting to 50", depth)
-		depth = 50
+	if depth <= 0 {
+		depth = 20
 	}
 	outputMode := orderbook.OutputMode()
 
 	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
 
-	log.Printf("Starting Bybit Orderbook Follower. Brokers: %v, Topic: %s, Symbol: %s, Depth: %d, Output: %s", brokers, topic, symbolNorm, depth, outputMode)
+	log.Printf("Starting Gate.io Orderbook Follower. Brokers: %v, Topic: %s, Symbol: %s, Depth: %d, Output: %s", brokers, topic, symbolNorm, depth, outputMode)
 
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
@@ -80,8 +133,6 @@ func main() {
 
 	book := orderbook.New()
 	var lastWSAt atomic.Int64
-	var resyncMu sync.Mutex
-	lastResyncAt := time.Time{}
 	restClient := &http.Client{Timeout: 5 * time.Second}
 
 	emitSnapshot := func(ts int64, snapshot bool) {
@@ -137,7 +188,7 @@ func main() {
 	}
 
 	fetchSnapshot := func(ctx context.Context) ([][]string, [][]string, int64, error) {
-		url := fmt.Sprintf("https://api.bybit.com/v5/market/orderbook?category=spot&symbol=%s&limit=%d", subSymbol, depth)
+		url := fmt.Sprintf("https://api.gateio.ws/api/v4/spot/order_book?currency_pair=%s&limit=%d", subSymbol, depth)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return nil, nil, 0, err
@@ -149,47 +200,21 @@ func main() {
 		defer resp.Body.Close()
 
 		var payload struct {
-			Result struct {
-				Bids      [][]string `json:"b"`
-				Asks      [][]string `json:"a"`
-				Timestamp int64      `json:"ts"`
-			} `json:"result"`
-			Time int64 `json:"time"`
+			Current json.RawMessage `json:"current"`
+			Update  json.RawMessage `json:"update"`
+			Bids    [][]string      `json:"bids"`
+			Asks    [][]string      `json:"asks"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 			return nil, nil, 0, err
 		}
-		ts := payload.Result.Timestamp
-		if ts == 0 {
-			ts = payload.Time
+		ts := time.Now().UnixMilli()
+		if v, ok := rawToInt64(payload.Update); ok {
+			ts = normalizeMillis(v)
+		} else if v, ok := rawToInt64(payload.Current); ok {
+			ts = normalizeMillis(v)
 		}
-		if ts == 0 {
-			ts = time.Now().UnixMilli()
-		}
-		return payload.Result.Bids, payload.Result.Asks, ts, nil
-	}
-
-	resync := func(reason string) {
-		resyncMu.Lock()
-		defer resyncMu.Unlock()
-		if !lastResyncAt.IsZero() && time.Since(lastResyncAt) < time.Second {
-			return
-		}
-		lastResyncAt = time.Now()
-
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		bids, asks, ts, err := fetchSnapshot(ctx)
-		cancel()
-		if err != nil {
-			log.Printf("Bybit resync error (%s): %v", reason, err)
-			return
-		}
-		if len(bids) == 0 && len(asks) == 0 {
-			return
-		}
-		book.ApplySnapshot(bids, asks)
-		emitSnapshot(ts, true)
-		log.Printf("Bybit resync applied (%s)", reason)
+		return payload.Bids, payload.Asks, ts, nil
 	}
 
 	go func() {
@@ -222,8 +247,10 @@ func main() {
 
 	subscribe := func(conn *websocket.Conn) error {
 		msg := map[string]any{
-			"op":   "subscribe",
-			"args": []string{fmt.Sprintf("orderbook.%d.%s", depth, subSymbol)},
+			"time":    time.Now().Unix(),
+			"channel": "spot.order_book",
+			"event":   "subscribe",
+			"payload": []string{subSymbol, strconv.Itoa(depth), "100ms"},
 		}
 		return conn.WriteJSON(msg)
 	}
@@ -250,58 +277,45 @@ func main() {
 		done := make(chan struct{})
 
 		go func() {
-			pingTicker := time.NewTicker(20 * time.Second)
-			defer pingTicker.Stop()
-			for {
-				select {
-				case <-done:
-					return
-				case <-pingTicker.C:
-					if err := conn.WriteJSON(map[string]string{"op": "ping"}); err != nil {
-						conn.Close()
-						return
-					}
-				}
-			}
-		}()
-
-		go func() {
 			defer close(done)
 			defer conn.Close()
 
 			for {
-				conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 				_, message, err := conn.ReadMessage()
 				if err != nil {
 					log.Printf("Read error: %v", err)
 					return
 				}
 
-				var env bybitOrderBookEnvelope
+				var env gateOrderBookEnvelope
 				if err := json.Unmarshal(message, &env); err != nil {
 					continue
 				}
+				if env.Channel != "spot.order_book" || env.Event != "update" {
+					continue
+				}
 
-				ts := env.Ts
+				ob, ok := parseGateOrderBook(env.Result)
+				if !ok {
+					continue
+				}
+				if len(ob.Bids) == 0 && len(ob.Asks) == 0 {
+					continue
+				}
+
+				ts := env.TimeMS
+				if ts == 0 && env.Time > 0 {
+					ts = env.Time * 1000
+				}
+				if v, ok := rawToInt64(ob.T); ok {
+					ts = normalizeMillis(v)
+				}
 				if ts == 0 {
-					ts = env.Data.Timestamp
-				}
-				if ts == 0 || (len(env.Data.Bids) == 0 && len(env.Data.Asks) == 0) {
-					continue
+					ts = time.Now().UnixMilli()
 				}
 
-				snapshot := strings.EqualFold(env.Type, "snapshot")
-				if snapshot {
-					book.ApplySnapshot(env.Data.Bids, env.Data.Asks)
-				} else {
-					book.ApplyDelta(env.Data.Bids, env.Data.Asks)
-				}
-				if book.IsCrossed() {
-					log.Printf("Bybit book crossed, forcing resync")
-					resync("crossed")
-					continue
-				}
-				emitSnapshot(ts, snapshot)
+				book.ApplySnapshot(ob.Bids, ob.Asks)
+				emitSnapshot(ts, true)
 				lastWSAt.Store(time.Now().UnixNano())
 			}
 		}()

@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"market_follower/internal/features"
-	"market_follower/internal/nats"
 	"market_follower/internal/models"
+	"market_follower/internal/nats"
 	"market_follower/internal/orderbook"
 	"market_follower/internal/symbols"
 
@@ -34,6 +34,100 @@ var (
 
 type SystemEvent struct {
 	Event string `json:"event"`
+}
+
+func parseInt64Any(raw json.RawMessage) (int64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var asInt int64
+	if err := json.Unmarshal(raw, &asInt); err == nil {
+		return asInt, true
+	}
+	var asFloat float64
+	if err := json.Unmarshal(raw, &asFloat); err == nil {
+		return int64(asFloat), true
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		val, err := strconv.ParseInt(asString, 10, 64)
+		if err == nil {
+			return val, true
+		}
+	}
+	return 0, false
+}
+
+func bestPriceFromLevels(levels [][]string, wantMax bool) (float64, bool) {
+	found := false
+	best := 0.0
+	for _, lvl := range levels {
+		if len(lvl) < 1 {
+			continue
+		}
+		val, err := strconv.ParseFloat(lvl[0], 64)
+		if err != nil {
+			continue
+		}
+		if !found {
+			best = val
+			found = true
+			continue
+		}
+		if wantMax {
+			if val > best {
+				best = val
+			}
+		} else if val < best {
+			best = val
+		}
+	}
+	return best, found
+}
+
+func checksumMatches(remote int64, local uint32) bool {
+	if remote == int64(local) {
+		return true
+	}
+	if remote == int64(int32(local)) {
+		return true
+	}
+	return false
+}
+
+func normalizeLevels(levels [][]any) [][]string {
+	if len(levels) == 0 {
+		return nil
+	}
+	out := make([][]string, 0, len(levels))
+	for _, lvl := range levels {
+		if len(lvl) < 2 {
+			continue
+		}
+		price, ok := anyToString(lvl[0])
+		if !ok {
+			continue
+		}
+		qty, ok := anyToString(lvl[1])
+		if !ok {
+			continue
+		}
+		out = append(out, []string{price, qty})
+	}
+	return out
+}
+
+func anyToString(val any) (string, bool) {
+	switch v := val.(type) {
+	case string:
+		return v, true
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64), true
+	case json.Number:
+		return v.String(), true
+	default:
+		return "", false
+	}
 }
 
 func main() {
@@ -64,7 +158,20 @@ func main() {
 		depth = 100
 	}
 	outputMode := orderbook.OutputMode()
-	log.Printf("Starting Kraken Orderbook Follower. Brokers: %v, Topic: %s, Pair: %s, Depth: %d, Output: %s", brokers, topic, pair, depth, outputMode)
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("ORDERBOOK_MODE")))
+	if mode == "" {
+		mode = "ws"
+	}
+	if mode != "ws" && mode != "rest" {
+		mode = "ws"
+	}
+	restInterval := time.Second
+	if raw := strings.TrimSpace(os.Getenv("ORDERBOOK_REST_INTERVAL_MS")); raw != "" {
+		if ms, err := strconv.ParseInt(raw, 10, 64); err == nil && ms > 0 {
+			restInterval = time.Duration(ms) * time.Millisecond
+		}
+	}
+	log.Printf("Starting Kraken Orderbook Follower. Brokers: %v, Topic: %s, Pair: %s, Depth: %d, Output: %s, Mode: %s, RestInterval: %s", brokers, topic, pair, depth, outputMode, mode, restInterval)
 
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
@@ -76,6 +183,8 @@ func main() {
 
 	book := orderbook.New()
 	var lastWSAt atomic.Int64
+	var resyncMu sync.Mutex
+	lastResyncAt := time.Time{}
 	restClient := &http.Client{Timeout: 5 * time.Second}
 	restDepth := depth
 	if restDepth <= 0 {
@@ -149,46 +258,82 @@ func main() {
 
 		var payload struct {
 			Result map[string]struct {
-				Bids [][]string `json:"bids"`
-				Asks [][]string `json:"asks"`
+				Bids [][]any `json:"bids"`
+				Asks [][]any `json:"asks"`
 			} `json:"result"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 			return nil, nil, 0, err
 		}
 		for _, data := range payload.Result {
-			return data.Bids, data.Asks, time.Now().UnixMilli(), nil
+			return normalizeLevels(data.Bids), normalizeLevels(data.Asks), time.Now().UnixMilli(), nil
 		}
 		return nil, nil, 0, nil
 	}
 
+	pollSnapshot := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		bids, asks, ts, err := fetchSnapshot(ctx)
+		cancel()
+		if err != nil {
+			log.Printf("REST snapshot error: %v", err)
+			return
+		}
+		if len(bids) == 0 && len(asks) == 0 {
+			return
+		}
+		book.ApplySnapshot(bids, asks)
+		emitSnapshot(ts, true)
+	}
+
+	resync := func(reason string) {
+		resyncMu.Lock()
+		defer resyncMu.Unlock()
+		if !lastResyncAt.IsZero() && time.Since(lastResyncAt) < time.Second {
+			return
+		}
+		lastResyncAt = time.Now()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		bids, asks, ts, err := fetchSnapshot(ctx)
+		cancel()
+		if err != nil {
+			log.Printf("Kraken resync error (%s): %v", reason, err)
+			return
+		}
+		if len(bids) == 0 && len(asks) == 0 {
+			return
+		}
+		book.ApplySnapshot(bids, asks)
+		emitSnapshot(ts, true)
+		log.Printf("Kraken resync applied (%s)", reason)
+	}
+
 	go func() {
-		ticker := time.NewTicker(time.Second)
+		ticker := time.NewTicker(restInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-stop:
 				return
 			case <-ticker.C:
-				last := lastWSAt.Load()
-				if last != 0 && time.Since(time.Unix(0, last)) < 2*time.Second {
-					continue
+				if mode != "rest" {
+					last := lastWSAt.Load()
+					if last != 0 && time.Since(time.Unix(0, last)) < 2*time.Second {
+						continue
+					}
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-				bids, asks, ts, err := fetchSnapshot(ctx)
-				cancel()
-				if err != nil {
-					log.Printf("REST snapshot error: %v", err)
-					continue
-				}
-				if len(bids) == 0 && len(asks) == 0 {
-					continue
-				}
-				book.ApplySnapshot(bids, asks)
-				emitSnapshot(ts, true)
+				pollSnapshot()
 			}
 		}
 	}()
+
+	if mode == "rest" {
+		<-interrupt
+		log.Println("Shutting down...")
+		closeStop()
+		return
+	}
 
 	for {
 		conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -218,6 +363,7 @@ func main() {
 		}
 
 		done := make(chan struct{})
+		swapSides := false
 
 		go func() {
 			defer close(done)
@@ -277,11 +423,44 @@ func main() {
 					continue
 				}
 
+				if snapshot && !swapSides {
+					rawBid, hasRawBid := bestPriceFromLevels(snapshotBids, true)
+					rawAsk, hasRawAsk := bestPriceFromLevels(snapshotAsks, false)
+					if hasRawBid && hasRawAsk && rawBid > rawAsk {
+						swapSides = true
+						log.Printf("Kraken snapshot appears crossed, swapping sides raw_bid=%.8f raw_ask=%.8f", rawBid, rawAsk)
+					}
+				}
+				if swapSides {
+					snapshotBids, snapshotAsks = snapshotAsks, snapshotBids
+					deltaBids, deltaAsks = deltaAsks, deltaBids
+				}
+
 				if snapshot {
 					book.ApplySnapshot(snapshotBids, snapshotAsks)
 				}
 				if len(deltaBids) > 0 || len(deltaAsks) > 0 {
 					book.ApplyDelta(deltaBids, deltaAsks)
+				}
+
+				if raw, ok := payload["c"]; ok {
+					if checksum, ok := parseInt64Any(raw); ok {
+						snap := book.Snapshot(10)
+						local := orderbook.ChecksumKraken(snap.Bids, snap.Asks, 10)
+						if !checksumMatches(checksum, local) {
+							log.Printf("Kraken checksum mismatch remote=%d local=%d", checksum, int64(int32(local)))
+							resync("checksum_mismatch")
+							conn.Close()
+							return
+						}
+					}
+				}
+				if book.IsCrossed() {
+					bestBid, bestAsk, _ := book.BestBidAsk()
+					log.Printf("Kraken book crossed (bb=%.8f ba=%.8f), forcing resync", bestBid, bestAsk)
+					resync("crossed")
+					conn.Close()
+					return
 				}
 
 				emitSnapshot(time.Now().UnixMilli(), snapshot)

@@ -39,10 +39,72 @@ type okxOrderBookEnvelope struct {
 		InstID  string `json:"instId"`
 	} `json:"arg"`
 	Data []struct {
-		Bids [][]string `json:"bids"`
-		Asks [][]string `json:"asks"`
-		Ts   string     `json:"ts"`
+		Bids      [][]string    `json:"bids"`
+		Asks      [][]string    `json:"asks"`
+		Ts        string        `json:"ts"`
+		Checksum  json.RawMessage `json:"checksum"`
+		SeqID     json.RawMessage `json:"seqId"`
+		PrevSeqID json.RawMessage `json:"prevSeqId"`
 	} `json:"data"`
+}
+
+func parseInt64Any(raw json.RawMessage) (int64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var asInt int64
+	if err := json.Unmarshal(raw, &asInt); err == nil {
+		return asInt, true
+	}
+	var asFloat float64
+	if err := json.Unmarshal(raw, &asFloat); err == nil {
+		return int64(asFloat), true
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		val, err := strconv.ParseInt(asString, 10, 64)
+		if err == nil {
+			return val, true
+		}
+	}
+	return 0, false
+}
+
+func bestPriceFromLevels(levels [][]string, wantMax bool) (float64, bool) {
+	found := false
+	best := 0.0
+	for _, lvl := range levels {
+		if len(lvl) < 1 {
+			continue
+		}
+		val, err := strconv.ParseFloat(lvl[0], 64)
+		if err != nil {
+			continue
+		}
+		if !found {
+			best = val
+			found = true
+			continue
+		}
+		if wantMax {
+			if val > best {
+				best = val
+			}
+		} else if val < best {
+			best = val
+		}
+	}
+	return best, found
+}
+
+func checksumMatches(remote int64, local uint32) bool {
+	if remote == int64(local) {
+		return true
+	}
+	if remote == int64(int32(local)) {
+		return true
+	}
+	return false
 }
 
 func main() {
@@ -66,11 +128,13 @@ func main() {
 	}
 	channel := "books"
 	depth := *depthFlag
+	snapshotOnlyChannel := false
 	switch depth {
 	case 0:
 		channel = "books"
 	case 5, 50:
 		channel = "books" + strconv.Itoa(depth)
+		snapshotOnlyChannel = true
 	default:
 		log.Printf("Unsupported depth %d, defaulting to full book", depth)
 		channel = "books"
@@ -92,6 +156,9 @@ func main() {
 
 	book := orderbook.New()
 	var lastWSAt atomic.Int64
+	var lastSeq int64
+	var resyncMu sync.Mutex
+	lastResyncAt := time.Time{}
 	restClient := &http.Client{Timeout: 5 * time.Second}
 	restDepth := depth
 	if restDepth <= 0 {
@@ -184,6 +251,30 @@ func main() {
 		return payload.Data[0].Bids, payload.Data[0].Asks, ts, nil
 	}
 
+	resync := func(reason string) {
+		resyncMu.Lock()
+		defer resyncMu.Unlock()
+		if !lastResyncAt.IsZero() && time.Since(lastResyncAt) < time.Second {
+			return
+		}
+		lastResyncAt = time.Now()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		bids, asks, ts, err := fetchSnapshot(ctx)
+		cancel()
+		if err != nil {
+			log.Printf("OKX resync error (%s): %v", reason, err)
+			return
+		}
+		if len(bids) == 0 && len(asks) == 0 {
+			return
+		}
+		book.ApplySnapshot(bids, asks)
+		lastSeq = 0
+		emitSnapshot(ts, true)
+		log.Printf("OKX resync applied (%s)", reason)
+	}
+
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
@@ -242,6 +333,7 @@ func main() {
 		}
 
 		done := make(chan struct{})
+		swapSides := false
 
 		go func() {
 			pingTicker := time.NewTicker(20 * time.Second)
@@ -290,11 +382,54 @@ func main() {
 					}
 				}
 
-				snapshot := strings.EqualFold(env.Action, "snapshot")
+				snapshot := snapshotOnlyChannel || strings.EqualFold(env.Action, "snapshot") || env.Action == ""
+				seqID, hasSeq := parseInt64Any(d.SeqID)
+				prevSeq, hasPrev := parseInt64Any(d.PrevSeqID)
+				checksum, hasChecksum := parseInt64Any(d.Checksum)
+				bids := d.Bids
+				asks := d.Asks
+				rawBid, hasRawBid := bestPriceFromLevels(bids, true)
+				rawAsk, hasRawAsk := bestPriceFromLevels(asks, false)
+				if snapshot && !swapSides && hasRawBid && hasRawAsk && rawBid > rawAsk {
+					swapSides = true
+					log.Printf("OKX snapshot appears crossed, swapping sides raw_bid=%.8f raw_ask=%.8f", rawBid, rawAsk)
+				}
+				if swapSides {
+					bids, asks = asks, bids
+				}
 				if snapshot {
-					book.ApplySnapshot(d.Bids, d.Asks)
+					book.ApplySnapshot(bids, asks)
+					if hasSeq {
+						lastSeq = seqID
+					}
 				} else {
-					book.ApplyDelta(d.Bids, d.Asks)
+					if hasPrev && lastSeq != 0 && prevSeq != lastSeq {
+						log.Printf("OKX seq mismatch prev=%d last=%d", prevSeq, lastSeq)
+						resync("seq_mismatch")
+						conn.Close()
+						return
+					}
+					book.ApplyDelta(bids, asks)
+					if hasSeq {
+						lastSeq = seqID
+					}
+				}
+				if hasChecksum {
+					snap := book.Snapshot(depth)
+					local := orderbook.ChecksumOKX(snap.Bids, snap.Asks, depth)
+					if !checksumMatches(checksum, local) {
+						log.Printf("OKX checksum mismatch remote=%d local=%d", checksum, int64(int32(local)))
+						resync("checksum_mismatch")
+						conn.Close()
+						return
+					}
+				}
+				if book.IsCrossed() {
+					bestBid, bestAsk, _ := book.BestBidAsk()
+					log.Printf("OKX book crossed (bb=%.8f ba=%.8f raw_bb=%.8f raw_ba=%.8f), forcing resync", bestBid, bestAsk, rawBid, rawAsk)
+					resync("crossed")
+					conn.Close()
+					return
 				}
 				emitSnapshot(ts, snapshot)
 				lastWSAt.Store(time.Now().UnixNano())
