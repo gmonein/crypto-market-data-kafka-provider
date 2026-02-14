@@ -70,6 +70,83 @@ Or run locally:
 SYMBOL=ETHUSDT go run ./cmd/binance-price -brokers nats://localhost:4222
 ```
 
+## Payload metadata fields
+
+All market-data payloads keep legacy compact keys (`T`, `p`, `v`, `bb`, `ba`, etc.) and now include:
+
+- `event_ts_ms`: exchange/source event timestamp (ms)
+- `recv_ts_ms`: local receive timestamp right after raw message read (ms)
+- `publish_ts_ms`: local timestamp right before publish (ms)
+- `ingest_lag_ms`: `max(recv_ts_ms - event_ts_ms, 0)`
+- `source_seq`: monotonic per-process sequence number
+- `source_event_id`: venue-provided event/sequence/checksum id when available, otherwise `""`
+
+Example price payload:
+
+```json
+{
+  "T": 1765037935846,
+  "p": "89921.57",
+  "bb": "89921.56",
+  "ba": "89921.58",
+  "bq": "0.12",
+  "aq": "0.08",
+  "s": "BTCUSDT",
+  "event_ts_ms": 1765037935846,
+  "recv_ts_ms": 1765037935851,
+  "publish_ts_ms": 1765037935852,
+  "ingest_lag_ms": 5,
+  "source_seq": 12877,
+  "source_event_id": "3192775512"
+}
+```
+
+Example volume payload:
+
+```json
+{
+  "T": 1765037919999,
+  "v": "0.0445",
+  "s": "BTCUSDT",
+  "event_ts_ms": 1765037919999,
+  "recv_ts_ms": 1765037920001,
+  "publish_ts_ms": 1765037920001,
+  "ingest_lag_ms": 2,
+  "source_seq": 901,
+  "source_event_id": "1765037919123"
+}
+```
+
+Example orderbook (features mode) payload:
+
+```json
+{
+  "T": 1765037935846,
+  "s": "BTCUSDT",
+  "bb": "89921.56",
+  "ba": "89921.58",
+  "bq": "0.12",
+  "aq": "0.08",
+  "mid": 89921.57,
+  "spr": 0.02,
+  "sb": 2.2,
+  "mic": 89921.56,
+  "i1": 0.2,
+  "i5": 0.08,
+  "i10": 0.04,
+  "bd5": 3.2,
+  "ad5": 2.9,
+  "bd10": 5.1,
+  "ad10": 4.8,
+  "event_ts_ms": 1765037935846,
+  "recv_ts_ms": 1765037935848,
+  "publish_ts_ms": 1765037935848,
+  "ingest_lag_ms": 2,
+  "source_seq": 45520,
+  "source_event_id": "1029384756"
+}
+```
+
 ## Notes / limitations
 
 - Exchange orderbook followers emit full top-N snapshots on each update (bids/asks arrays) and fall back to REST polling during WS stalls.

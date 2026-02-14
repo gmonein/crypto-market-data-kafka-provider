@@ -9,15 +9,17 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"market_follower/internal/features"
-	"market_follower/internal/nats"
 	"market_follower/internal/models"
+	"market_follower/internal/nats"
 	"market_follower/internal/orderbook"
+	"market_follower/internal/streammeta"
 	"market_follower/internal/symbols"
 
 	"github.com/gorilla/websocket"
@@ -67,6 +69,7 @@ func main() {
 
 	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
+	seq := streammeta.NewSequencer()
 
 	log.Printf("Starting Bybit Orderbook Follower. Brokers: %v, Topic: %s, Symbol: %s, Depth: %d, Output: %s", brokers, topic, symbolNorm, depth, outputMode)
 
@@ -84,11 +87,12 @@ func main() {
 	lastResyncAt := time.Time{}
 	restClient := &http.Client{Timeout: 5 * time.Second}
 
-	emitSnapshot := func(ts int64, snapshot bool) {
+	emitSnapshot := func(ts int64, recvTs int64, snapshot bool, sourceEventID string) {
 		snap := book.Snapshot(depth)
 		if len(snap.Bids) == 0 && len(snap.Asks) == 0 {
 			return
 		}
+		meta := streammeta.BuildNow(ts, recvTs, seq.Next(), sourceEventID)
 		var out any
 		if outputMode == orderbook.OutputFeatures {
 			metrics, ok := features.ComputeOrderbookFeatures(snap)
@@ -113,6 +117,7 @@ func main() {
 				AskDepth5:       metrics.AskDepth5,
 				BidDepth10:      metrics.BidDepth10,
 				AskDepth10:      metrics.AskDepth10,
+				StreamMeta:      meta,
 			}
 		} else {
 			out = models.OrderbookOutput{
@@ -125,6 +130,7 @@ func main() {
 				Bids:            snap.Bids,
 				Asks:            snap.Asks,
 				Snapshot:        snapshot,
+				StreamMeta:      meta,
 			}
 		}
 		b, err := json.Marshal(out)
@@ -188,7 +194,11 @@ func main() {
 			return
 		}
 		book.ApplySnapshot(bids, asks)
-		emitSnapshot(ts, true)
+		sourceEventID := ""
+		if ts > 0 {
+			sourceEventID = strconv.FormatInt(ts, 10)
+		}
+		emitSnapshot(ts, streammeta.CaptureRecvTsMs(), true, sourceEventID)
 		log.Printf("Bybit resync applied (%s)", reason)
 	}
 
@@ -215,7 +225,11 @@ func main() {
 					continue
 				}
 				book.ApplySnapshot(bids, asks)
-				emitSnapshot(ts, true)
+				sourceEventID := ""
+				if ts > 0 {
+					sourceEventID = strconv.FormatInt(ts, 10)
+				}
+				emitSnapshot(ts, streammeta.CaptureRecvTsMs(), true, sourceEventID)
 			}
 		}
 	}()
@@ -276,6 +290,7 @@ func main() {
 					log.Printf("Read error: %v", err)
 					return
 				}
+				recvTsMs := streammeta.CaptureRecvTsMs()
 
 				var env bybitOrderBookEnvelope
 				if err := json.Unmarshal(message, &env); err != nil {
@@ -301,7 +316,8 @@ func main() {
 					resync("crossed")
 					continue
 				}
-				emitSnapshot(ts, snapshot)
+				sourceEventID := strconv.FormatInt(ts, 10)
+				emitSnapshot(ts, recvTsMs, snapshot, sourceEventID)
 				lastWSAt.Store(time.Now().UnixNano())
 			}
 		}()

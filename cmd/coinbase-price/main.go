@@ -13,6 +13,7 @@ import (
 
 	"market_follower/internal/models"
 	"market_follower/internal/nats"
+	"market_follower/internal/streammeta"
 	"market_follower/internal/symbols"
 
 	"github.com/gorilla/websocket"
@@ -36,7 +37,7 @@ type SubscribeMessage struct {
 
 type GenericMessage struct {
 	Channel   string          `json:"channel"`
-	Timestamp string          `json:timestamp"`
+	Timestamp string          `json:"timestamp"`
 	Events    json.RawMessage `json:"events"`
 }
 
@@ -92,6 +93,8 @@ func main() {
 	var lastBestBidQuantity string
 	var lastBestAskQuantity string
 	var lastTime int64
+	var lastSourceEventID string
+	seq := streammeta.NewSequencer()
 
 	for {
 		conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -122,7 +125,7 @@ func main() {
 		go func() {
 			defer close(done)
 
-			sendToNats := func(p, bb, ba, bq, aq string, t int64) {
+			sendToNats := func(p, bb, ba, bq, aq string, t int64, recvTs int64, sourceEventID string) {
 				if p == "" {
 					return
 				}
@@ -134,6 +137,7 @@ func main() {
 					BestBidQuantity: bq,
 					BestAskQuantity: aq,
 					Symbol:          symbolNorm,
+					StreamMeta:      streammeta.BuildNow(t, recvTs, seq.Next(), sourceEventID),
 				}
 				b, _ := json.Marshal(out)
 				log.Printf("%s\n", b)
@@ -146,6 +150,7 @@ func main() {
 					log.Printf("Read error: %v", err)
 					return
 				}
+				recvTsMs := streammeta.CaptureRecvTsMs()
 
 				var baseMsg GenericMessage
 				if err := json.Unmarshal(message, &baseMsg); err != nil {
@@ -191,10 +196,11 @@ func main() {
 							lastBestBidQuantity = t.BestBidQuantity
 							lastBestAskQuantity = t.BestAskQuantity
 							lastTime = currentTs
+							lastSourceEventID = baseMsg.Timestamp
 							mu.Unlock()
 
 							// Emit on Ticker
-							sendToNats(calcPrice, t.BestBid, t.BestAsk, t.BestBidQuantity, t.BestAskQuantity, currentTs)
+							sendToNats(calcPrice, t.BestBid, t.BestAsk, t.BestBidQuantity, t.BestAskQuantity, currentTs, recvTsMs, baseMsg.Timestamp)
 						}
 					}
 				} else if baseMsg.Channel == "heartbeat" {
@@ -206,9 +212,10 @@ func main() {
 					bq := lastBestBidQuantity
 					aq := lastBestAskQuantity
 					t := lastTime
+					sourceEventID := lastSourceEventID
 					mu.Unlock()
 
-					sendToNats(p, bb, ba, bq, aq, t)
+					sendToNats(p, bb, ba, bq, aq, t, recvTsMs, sourceEventID)
 				}
 			}
 		}()

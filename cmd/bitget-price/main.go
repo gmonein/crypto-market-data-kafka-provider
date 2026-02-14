@@ -11,8 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"market_follower/internal/nats"
 	"market_follower/internal/models"
+	"market_follower/internal/nats"
+	"market_follower/internal/streammeta"
 	"market_follower/internal/symbols"
 
 	"github.com/gorilla/websocket"
@@ -63,7 +64,10 @@ func main() {
 	var mu sync.Mutex
 	var lastPrice string
 	var lastTime int64
+	var lastRecvTs int64
+	var lastSourceEventID string
 	var hasNew bool
+	seq := streammeta.NewSequencer()
 
 	// Emitter Routine (Throttle to 100Hz like others)
 	emitDone := make(chan struct{})
@@ -82,10 +86,17 @@ func main() {
 				}
 				p := lastPrice
 				t := lastTime
+				recvTs := lastRecvTs
+				sourceEventID := lastSourceEventID
 				hasNew = false
 				mu.Unlock()
 
-				out := models.PriceOutput{Timestamp: t, Price: p, Symbol: symbolNorm}
+				out := models.PriceOutput{
+					Timestamp:  t,
+					Price:      p,
+					Symbol:     symbolNorm,
+					StreamMeta: streammeta.BuildNow(t, recvTs, seq.Next(), sourceEventID),
+				}
 				b, err := json.Marshal(out)
 				if err != nil {
 					continue
@@ -163,6 +174,7 @@ func main() {
 					log.Printf("Read error: %v", err)
 					return
 				}
+				recvTsMs := streammeta.CaptureRecvTsMs()
 
 				if string(message) == "pong" {
 					continue
@@ -197,6 +209,8 @@ func main() {
 				mu.Lock()
 				lastPrice = d.LastPr
 				lastTime = ts
+				lastRecvTs = recvTsMs
+				lastSourceEventID = d.Ts
 				hasNew = true
 				mu.Unlock()
 			}

@@ -6,11 +6,13 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"time"
 
-	"market_follower/internal/nats"
 	"market_follower/internal/models"
+	"market_follower/internal/nats"
+	"market_follower/internal/streammeta"
 	"market_follower/internal/symbols"
 
 	"github.com/gorilla/websocket"
@@ -59,6 +61,7 @@ func main() {
 
 	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
+	seq := streammeta.NewSequencer()
 
 	log.Printf("Starting Chainlink Price Follower. Brokers: %v, Topic: %s, Symbol: %s", brokers, topic, chainlinkSymbol)
 
@@ -134,6 +137,7 @@ func main() {
 					log.Printf("Read error (likely timeout): %v", err)
 					return
 				}
+				recvTsMs := streammeta.CaptureRecvTsMs()
 
 				// Check for keepalive/empty messages if any (Polymarket sometimes sends weird stuff)
 				if len(message) == 0 {
@@ -207,6 +211,7 @@ func main() {
 						Value     float64 `json:"value"`
 						Timestamp int64   `json:"timestamp"`
 						Symbol    string  `json:"s"`
+						models.StreamMeta
 					}
 
 					for _, p := range prices {
@@ -214,6 +219,17 @@ func main() {
 							Value:     p.Value,
 							Timestamp: p.Timestamp,
 							Symbol:    symbolNorm,
+							StreamMeta: streammeta.BuildNow(
+								p.Timestamp,
+								recvTsMs,
+								seq.Next(),
+								func() string {
+									if p.Timestamp <= 0 {
+										return ""
+									}
+									return strconv.FormatInt(p.Timestamp, 10)
+								}(),
+							),
 						}
 						b, _ := json.Marshal(output)
 						// log.Printf("Sent: %f", p.Value)

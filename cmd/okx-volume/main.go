@@ -11,8 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"market_follower/internal/nats"
 	"market_follower/internal/models"
+	"market_follower/internal/nats"
+	"market_follower/internal/streammeta"
 	"market_follower/internal/symbols"
 
 	"github.com/gorilla/websocket"
@@ -57,6 +58,7 @@ func main() {
 
 	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
+	seq := streammeta.NewSequencer()
 
 	log.Printf("Starting OKX Volume Follower. Brokers: %v, Topic: %s, InstID: %s", brokers, topic, instID)
 
@@ -66,6 +68,8 @@ func main() {
 	var mu sync.Mutex
 	var lastVolume string
 	var lastTime int64
+	var lastRecvTs int64
+	var lastSourceEventID string
 
 	subscribe := func(conn *websocket.Conn) error {
 		msg := map[string]any{
@@ -124,16 +128,23 @@ func main() {
 					log.Printf("Read error: %v", err)
 					return
 				}
+				recvTsMs := streammeta.CaptureRecvTsMs()
 
 				if string(message) == "pong" {
 					mu.Lock()
 					v := lastVolume
 					t := lastTime
+					sourceEventID := lastSourceEventID
 					mu.Unlock()
 
 					log.Printf("%s", lastVolume)
 					if v != "" {
-						out := models.VolumeOutput{Timestamp: t, Volume: v, Symbol: symbolNorm}
+						out := models.VolumeOutput{
+							Timestamp:  t,
+							Volume:     v,
+							Symbol:     symbolNorm,
+							StreamMeta: streammeta.BuildNow(t, recvTsMs, seq.Next(), sourceEventID),
+						}
 						b, _ := json.Marshal(out)
 						producer.WriteMessage(nil, b)
 					}
@@ -165,9 +176,16 @@ func main() {
 				mu.Lock()
 				lastVolume = vol
 				lastTime = ts
+				lastRecvTs = recvTsMs
+				lastSourceEventID = c[0]
 				mu.Unlock()
 
-				out := models.VolumeOutput{Timestamp: ts, Volume: vol, Symbol: symbolNorm}
+				out := models.VolumeOutput{
+					Timestamp:  ts,
+					Volume:     vol,
+					Symbol:     symbolNorm,
+					StreamMeta: streammeta.BuildNow(ts, lastRecvTs, seq.Next(), lastSourceEventID),
+				}
 				b, err := json.Marshal(out)
 				if err != nil {
 					continue

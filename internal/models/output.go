@@ -1,5 +1,14 @@
 package models
 
+type StreamMeta struct {
+	EventTsMs     int64  `json:"event_ts_ms"`
+	RecvTsMs      int64  `json:"recv_ts_ms"`
+	PublishTsMs   int64  `json:"publish_ts_ms"`
+	IngestLagMs   int64  `json:"ingest_lag_ms"`
+	SourceSeq     uint64 `json:"source_seq"`
+	SourceEventID string `json:"source_event_id"`
+}
+
 type PriceOutput struct {
 	Timestamp       int64  `json:"T"`
 	Price           string `json:"p"`
@@ -8,12 +17,14 @@ type PriceOutput struct {
 	BestBidQuantity string `json:"bq"`
 	BestAskQuantity string `json:"aq"`
 	Symbol          string `json:"s"`
+	StreamMeta
 }
 
 type VolumeOutput struct {
 	Timestamp int64  `json:"T"`
 	Volume    string `json:"v"`
 	Symbol    string `json:"s"`
+	StreamMeta
 }
 
 type OrderbookOutput struct {
@@ -26,6 +37,7 @@ type OrderbookOutput struct {
 	Bids            [][]string `json:"bids"`
 	Asks            [][]string `json:"asks"`
 	Snapshot        bool       `json:"snapshot"`
+	StreamMeta
 }
 
 type OrderbookFeaturesOutput struct {
@@ -46,4 +58,5 @@ type OrderbookFeaturesOutput struct {
 	AskDepth5       float64 `json:"ad5"`
 	BidDepth10      float64 `json:"bd10"`
 	AskDepth10      float64 `json:"ad10"`
+	StreamMeta
 }

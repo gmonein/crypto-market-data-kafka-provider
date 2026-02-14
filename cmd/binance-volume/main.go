@@ -7,11 +7,13 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"time"
 
-	"market_follower/internal/nats"
 	"market_follower/internal/models"
+	"market_follower/internal/nats"
+	"market_follower/internal/streammeta"
 	"market_follower/internal/symbols"
 
 	"github.com/gorilla/websocket"
@@ -41,6 +43,7 @@ func main() {
 
 	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
+	seq := streammeta.NewSequencer()
 
 	log.Printf("Starting Binance Volume Follower. Brokers: %v, Topic: %s, Symbol: %s", brokers, topic, symbol)
 
@@ -67,6 +70,7 @@ func main() {
 					log.Printf("Read error: %v", err)
 					return
 				}
+				recvTsMs := streammeta.CaptureRecvTsMs()
 
 				var kline models.BinanceKline
 				if err := json.Unmarshal(message, &kline); err != nil {
@@ -78,6 +82,12 @@ func main() {
 					Timestamp: kline.Kline.CloseTime,
 					Volume:    kline.Kline.Volume.String(),
 					Symbol:    symbolNorm,
+					StreamMeta: streammeta.BuildNow(
+						kline.Kline.CloseTime,
+						recvTsMs,
+						seq.Next(),
+						strconv.FormatInt(kline.Kline.CloseTime, 10),
+					),
 				}
 
 				outputBytes, err := json.Marshal(output)

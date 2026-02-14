@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -10,8 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"market_follower/internal/nats"
 	"market_follower/internal/models"
+	"market_follower/internal/nats"
+	"market_follower/internal/streammeta"
 	"market_follower/internal/symbols"
 
 	"github.com/gorilla/websocket"
@@ -34,6 +36,7 @@ type bybitTradeEnvelope struct {
 	Data  []struct {
 		TradeTime int64  `json:"T"`
 		Price     string `json:"p"`
+		TradeID   string `json:"i"`
 	} `json:"data"`
 }
 
@@ -62,7 +65,10 @@ func main() {
 	var mu sync.Mutex
 	var lastPrice string
 	var lastTime int64
+	var lastRecvTs int64
+	var lastSourceEventID string
 	var hasNew bool
+	seq := streammeta.NewSequencer()
 
 	emitDone := make(chan struct{})
 	go func() {
@@ -80,10 +86,17 @@ func main() {
 				}
 				p := lastPrice
 				t := lastTime
+				recvTs := lastRecvTs
+				sourceEventID := lastSourceEventID
 				hasNew = false
 				mu.Unlock()
 
-				out := models.PriceOutput{Timestamp: t, Price: p, Symbol: symbolNorm}
+				out := models.PriceOutput{
+					Timestamp:  t,
+					Price:      p,
+					Symbol:     symbolNorm,
+					StreamMeta: streammeta.BuildNow(t, recvTs, seq.Next(), sourceEventID),
+				}
 				b, err := json.Marshal(out)
 				if err != nil {
 					continue
@@ -152,6 +165,7 @@ func main() {
 					log.Printf("Read error: %v", err)
 					return
 				}
+				recvTsMs := streammeta.CaptureRecvTsMs()
 
 				log.Printf("%s", message)
 				var env bybitTradeEnvelope
@@ -181,6 +195,12 @@ func main() {
 				mu.Lock()
 				lastPrice = d.Price
 				lastTime = d.TradeTime
+				lastRecvTs = recvTsMs
+				if d.TradeID != "" {
+					lastSourceEventID = d.TradeID
+				} else {
+					lastSourceEventID = fmt.Sprintf("%d", d.TradeTime)
+				}
 				hasNew = true
 				mu.Unlock()
 			}

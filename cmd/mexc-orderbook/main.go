@@ -15,6 +15,7 @@ import (
 	"market_follower/internal/models"
 	"market_follower/internal/nats"
 	"market_follower/internal/orderbook"
+	"market_follower/internal/streammeta"
 	"market_follower/internal/symbols"
 
 	"github.com/gorilla/websocket"
@@ -128,6 +129,7 @@ func main() {
 
 	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
+	seq := streammeta.NewSequencer()
 
 	log.Printf("Starting MEXC Orderbook Follower. Brokers: %v, Topic: %s, Symbol: %s, Depth: %d, Output: %s", brokers, topic, symbolNorm, depth, outputMode)
 
@@ -141,11 +143,12 @@ func main() {
 
 	book := orderbook.New()
 
-	emitSnapshot := func(ts int64, snapshot bool) {
+	emitSnapshot := func(ts int64, recvTs int64, snapshot bool, sourceEventID string) {
 		snap := book.Snapshot(depth)
 		if len(snap.Bids) == 0 && len(snap.Asks) == 0 {
 			return
 		}
+		meta := streammeta.BuildNow(ts, recvTs, seq.Next(), sourceEventID)
 		var out any
 		if outputMode == orderbook.OutputFeatures {
 			metrics, ok := features.ComputeOrderbookFeatures(snap)
@@ -170,6 +173,7 @@ func main() {
 				AskDepth5:       metrics.AskDepth5,
 				BidDepth10:      metrics.BidDepth10,
 				AskDepth10:      metrics.AskDepth10,
+				StreamMeta:      meta,
 			}
 		} else {
 			out = models.OrderbookOutput{
@@ -182,6 +186,7 @@ func main() {
 				Bids:            snap.Bids,
 				Asks:            snap.Asks,
 				Snapshot:        snapshot,
+				StreamMeta:      meta,
 			}
 		}
 		b, err := json.Marshal(out)
@@ -251,6 +256,7 @@ func main() {
 					log.Printf("Read error: %v", err)
 					return
 				}
+				recvTsMs := streammeta.CaptureRecvTsMs()
 
 				var env mexcDepthEnvelope
 				if err := json.Unmarshal(message, &env); err != nil {
@@ -270,9 +276,13 @@ func main() {
 				if ts == 0 {
 					ts = time.Now().UnixMilli()
 				}
+				sourceEventID := ""
+				if ts > 0 {
+					sourceEventID = strconv.FormatInt(ts, 10)
+				}
 
 				book.ApplySnapshot(bids, asks)
-				emitSnapshot(ts, true)
+				emitSnapshot(ts, recvTsMs, true, sourceEventID)
 			}
 		}()
 

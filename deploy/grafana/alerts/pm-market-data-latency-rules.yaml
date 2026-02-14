@@ -1,0 +1,33 @@
+groups:
+  - name: pm-market-data-metadata
+    interval: 30s
+    rules:
+      - alert: PMMarketDataHighIngestLagP95
+        expr: histogram_quantile(0.95, sum by (le, exchange, symbol) (rate(pm_market_data_ingest_lag_ms_bucket[5m]))) > 250
+        for: 10m
+        labels:
+          severity: warning
+          service: pm-market-data
+        annotations:
+          summary: High ingest lag p95 on {{ $labels.exchange }} {{ $labels.symbol }}
+          description: ingest lag p95 exceeded 250ms for 10m.
+
+      - alert: PMMarketDataHighPublishDelayP95
+        expr: histogram_quantile(0.95, sum by (le, exchange, symbol) (rate(pm_market_data_publish_delay_ms_bucket[5m]))) > 100
+        for: 10m
+        labels:
+          severity: warning
+          service: pm-market-data
+        annotations:
+          summary: High publish delay p95 on {{ $labels.exchange }} {{ $labels.symbol }}
+          description: publish delay p95 exceeded 100ms for 10m.
+
+      - alert: PMMarketDataMetadataInvariantViolation
+        expr: sum(rate(pm_market_data_metadata_invariant_violations_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: pm-market-data
+        annotations:
+          summary: Metadata invariants are being violated
+          description: publish_ts_ms < recv_ts_ms or ingest_lag_ms < 0 observed in payload processing.

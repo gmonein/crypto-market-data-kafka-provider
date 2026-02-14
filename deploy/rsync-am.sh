@@ -5,6 +5,8 @@ remote_host="${1:-am}"
 remote_path="${2:-/home/g/polymarket-services/pm-market-data/}"
 symbols="${SYMBOLS_OVERRIDE:-BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT}"
 action="${CRAWLER_ACTION:-restart}"
+fx_symbol="${FX_SYMBOL:-USDTUSD}"
+fx_followers="${FX_FOLLOWER_SERVICES:-binance-price binance-volume binance-orderbook}"
 
 repo_dir=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
 
@@ -23,4 +25,5 @@ ssh "$remote_host" "cd '$remote_path' && \
   if ! docker network inspect pm-net >/dev/null 2>&1; then docker network create pm-net >/dev/null; fi && \
   for sym in \$(printf '%s' \"${symbols}\" | tr ',' ' '); do \
     ./deploy/run-crawlers.sh \"\${sym}\" \"${action}\"; \
-  done"
+  done && \
+  FOLLOWER_SERVICES=\"${fx_followers}\" ./deploy/run-crawlers.sh \"${fx_symbol}\" \"${action}\""

@@ -39,6 +39,13 @@ Notes:
 - `run-crawlers.sh` ensures the shared `pm-net` network exists.
 - NATS runs once in the `pm-market-data-infra` project; followers run per-symbol projects.
 
+## Grafana
+
+Starter Grafana assets for metadata latency monitoring are in:
+
+- `deploy/grafana/dashboards/pm-market-data-latency.json`
+- `deploy/grafana/alerts/pm-market-data-latency-rules.yaml`
+
 ## Env
 
 Place a `.env` file in the repo root on the host (Docker Compose loads it automatically). Example:

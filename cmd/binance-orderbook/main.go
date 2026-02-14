@@ -15,9 +15,10 @@ import (
 	"time"
 
 	"market_follower/internal/features"
-	"market_follower/internal/nats"
 	"market_follower/internal/models"
+	"market_follower/internal/nats"
 	"market_follower/internal/orderbook"
+	"market_follower/internal/streammeta"
 	"market_follower/internal/symbols"
 
 	"github.com/gorilla/websocket"
@@ -55,6 +56,7 @@ func main() {
 
 	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
+	seq := streammeta.NewSequencer()
 
 	log.Printf("Starting Binance Orderbook Follower. Brokers: %v, Topic: %s, Symbol: %s, Depth: %d, Output: %s", brokers, topic, symbolNorm, depth, outputMode)
 
@@ -70,11 +72,12 @@ func main() {
 	var lastWSAt atomic.Int64
 	restClient := &http.Client{Timeout: 5 * time.Second}
 
-	emitSnapshot := func(ts int64, snapshot bool) {
+	emitSnapshot := func(ts int64, recvTs int64, snapshot bool, sourceEventID string) {
 		snap := book.Snapshot(depth)
 		if len(snap.Bids) == 0 && len(snap.Asks) == 0 {
 			return
 		}
+		meta := streammeta.BuildNow(ts, recvTs, seq.Next(), sourceEventID)
 		var out any
 		if outputMode == orderbook.OutputFeatures {
 			metrics, ok := features.ComputeOrderbookFeatures(snap)
@@ -99,6 +102,7 @@ func main() {
 				AskDepth5:       metrics.AskDepth5,
 				BidDepth10:      metrics.BidDepth10,
 				AskDepth10:      metrics.AskDepth10,
+				StreamMeta:      meta,
 			}
 		} else {
 			out = models.OrderbookOutput{
@@ -111,6 +115,7 @@ func main() {
 				Bids:            snap.Bids,
 				Asks:            snap.Asks,
 				Snapshot:        snapshot,
+				StreamMeta:      meta,
 			}
 		}
 		b, err := json.Marshal(out)
@@ -167,7 +172,7 @@ func main() {
 					continue
 				}
 				book.ApplySnapshot(bids, asks)
-				emitSnapshot(ts, true)
+				emitSnapshot(ts, streammeta.CaptureRecvTsMs(), true, "")
 			}
 		}
 	}()
@@ -196,10 +201,14 @@ func main() {
 					log.Printf("Read error: %v", err)
 					return
 				}
+				recvTsMs := streammeta.CaptureRecvTsMs()
 
 				var env struct {
 					EventTime       int64      `json:"E"`
 					TransactionTime int64      `json:"T"`
+					FirstUpdateID   int64      `json:"U"`
+					FinalUpdateID   int64      `json:"u"`
+					LastUpdateID    int64      `json:"lastUpdateId"`
 					Bids            [][]string `json:"b"`
 					Asks            [][]string `json:"a"`
 					BidsAlt         [][]string `json:"bids"`
@@ -229,9 +238,18 @@ func main() {
 				if ts <= 0 {
 					ts = time.Now().UnixMilli()
 				}
+				sourceEventID := ""
+				switch {
+				case env.FinalUpdateID > 0:
+					sourceEventID = fmt.Sprintf("%d", env.FinalUpdateID)
+				case env.LastUpdateID > 0:
+					sourceEventID = fmt.Sprintf("%d", env.LastUpdateID)
+				case env.FirstUpdateID > 0:
+					sourceEventID = fmt.Sprintf("%d", env.FirstUpdateID)
+				}
 
 				book.ApplySnapshot(bids, asks)
-				emitSnapshot(ts, true)
+				emitSnapshot(ts, recvTsMs, true, sourceEventID)
 				lastWSAt.Store(time.Now().UnixNano())
 			}
 		}()

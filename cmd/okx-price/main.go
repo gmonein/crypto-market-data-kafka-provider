@@ -11,8 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"market_follower/internal/nats"
 	"market_follower/internal/models"
+	"market_follower/internal/nats"
+	"market_follower/internal/streammeta"
 	"market_follower/internal/symbols"
 
 	"github.com/gorilla/websocket"
@@ -35,6 +36,7 @@ type okxTradeEnvelope struct {
 	Data []struct {
 		Price     string `json:"px"`
 		Timestamp string `json:"ts"`
+		TradeID   string `json:"tradeId"`
 	} `json:"data"`
 }
 
@@ -69,7 +71,10 @@ func main() {
 	var mu sync.Mutex
 	var lastPrice string
 	var lastTime int64
+	var lastRecvTs int64
+	var lastSourceEventID string
 	var hasNew bool
+	seq := streammeta.NewSequencer()
 
 	emitDone := make(chan struct{})
 	go func() {
@@ -87,10 +92,17 @@ func main() {
 				}
 				p := lastPrice
 				t := lastTime
+				recvTs := lastRecvTs
+				sourceEventID := lastSourceEventID
 				hasNew = false
 				mu.Unlock()
 
-				out := models.PriceOutput{Timestamp: t, Price: p, Symbol: symbolNorm}
+				out := models.PriceOutput{
+					Timestamp:  t,
+					Price:      p,
+					Symbol:     symbolNorm,
+					StreamMeta: streammeta.BuildNow(t, recvTs, seq.Next(), sourceEventID),
+				}
 				b, err := json.Marshal(out)
 				if err != nil {
 					continue
@@ -159,15 +171,22 @@ func main() {
 					log.Printf("Read error: %v", err)
 					return
 				}
+				recvTsMs := streammeta.CaptureRecvTsMs()
 
 				if string(message) == "pong" {
 					mu.Lock()
 					p := lastPrice
 					t := lastTime
+					sourceEventID := lastSourceEventID
 					mu.Unlock()
 
 					if p != "" {
-						out := models.PriceOutput{Timestamp: t, Price: p, Symbol: symbolNorm}
+						out := models.PriceOutput{
+							Timestamp:  t,
+							Price:      p,
+							Symbol:     symbolNorm,
+							StreamMeta: streammeta.BuildNow(t, recvTsMs, seq.Next(), sourceEventID),
+						}
 						b, _ := json.Marshal(out)
 						producer.WriteMessage(nil, b)
 					}
@@ -195,6 +214,8 @@ func main() {
 				mu.Lock()
 				lastPrice = d.Price
 				lastTime = ts
+				lastRecvTs = recvTsMs
+				lastSourceEventID = d.TradeID
 				hasNew = true
 				mu.Unlock()
 			}

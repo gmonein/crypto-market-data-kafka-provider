@@ -54,7 +54,21 @@ All services accept `-topic` to override the default.
 All price topics use:
 
 ```json
-{ "T": 1765037935846, "p": "89921.57", "bb": "89921.56", "ba": "89921.58", "bq": "0.12", "aq": "0.08", "s": "BTCUSDT" }
+{
+  "T": 1765037935846,
+  "p": "89921.57",
+  "bb": "89921.56",
+  "ba": "89921.58",
+  "bq": "0.12",
+  "aq": "0.08",
+  "s": "BTCUSDT",
+  "event_ts_ms": 1765037935846,
+  "recv_ts_ms": 1765037935851,
+  "publish_ts_ms": 1765037935852,
+  "ingest_lag_ms": 5,
+  "source_seq": 12877,
+  "source_event_id": "3192775512"
+}
 ```
 
 Notes:
@@ -66,7 +80,17 @@ Notes:
 All volume topics emit per-second volume buckets:
 
 ```json
-{ "T": 1765037919999, "v": "0.0445", "s": "BTCUSDT" }
+{
+  "T": 1765037919999,
+  "v": "0.0445",
+  "s": "BTCUSDT",
+  "event_ts_ms": 1765037919999,
+  "recv_ts_ms": 1765037920001,
+  "publish_ts_ms": 1765037920001,
+  "ingest_lag_ms": 2,
+  "source_seq": 901,
+  "source_event_id": "1765037919123"
+}
 ```
 
 `T` is the end-of-second timestamp in milliseconds.
@@ -85,7 +109,13 @@ Orderbook messages always contain a full snapshot of the top-N levels:
   "aq": "0.08",
   "bids": [["89921.56","0.12"], ["89921.55","0.20"]],
   "asks": [["89921.58","0.08"], ["89921.59","0.14"]],
-  "snapshot": true
+  "snapshot": true,
+  "event_ts_ms": 1765037935846,
+  "recv_ts_ms": 1765037935848,
+  "publish_ts_ms": 1765037935848,
+  "ingest_lag_ms": 2,
+  "source_seq": 45520,
+  "source_event_id": "1029384756"
 }
 ```
 
@@ -117,7 +147,13 @@ If `ORDERBOOK_OUTPUT=features`, orderbook topics emit a compact feature vector i
   "bd5": 3.2,
   "ad5": 2.9,
   "bd10": 5.1,
-  "ad10": 4.8
+  "ad10": 4.8,
+  "event_ts_ms": 1765037935846,
+  "recv_ts_ms": 1765037935848,
+  "publish_ts_ms": 1765037935848,
+  "ingest_lag_ms": 2,
+  "source_seq": 45520,
+  "source_event_id": "1029384756"
 }
 ```
 
@@ -128,6 +164,15 @@ Feature notes:
 - `mic` is microprice (top-of-book weighted by size).
 - `i1`/`i5`/`i10` are orderbook imbalance for top 1/5/10 levels.
 - `bd5`/`ad5`/`bd10`/`ad10` are cumulative depth (qty) for top 5/10 levels.
+
+Metadata notes:
+
+- `event_ts_ms` is the source/venue event timestamp used for the update.
+- `recv_ts_ms` is captured locally immediately after reading the raw message.
+- `publish_ts_ms` is captured locally immediately before publishing.
+- `ingest_lag_ms` is clamped to non-negative.
+- `source_seq` is process-local and monotonic.
+- `source_event_id` carries venue sequence/checksum/event IDs where exposed.
 
 Depth options by exchange:
 
@@ -141,7 +186,17 @@ Depth options by exchange:
 ### Chainlink price topic
 
 ```json
-{ "value": 89946.74897627215, "timestamp": 1765037614000, "s": "BTCUSDT" }
+{
+  "value": 89946.74897627215,
+  "timestamp": 1765037614000,
+  "s": "BTCUSDT",
+  "event_ts_ms": 1765037614000,
+  "recv_ts_ms": 1765037614002,
+  "publish_ts_ms": 1765037614002,
+  "ingest_lag_ms": 2,
+  "source_seq": 37,
+  "source_event_id": "1765037614000"
+}
 ```
 
 ## Operational notes

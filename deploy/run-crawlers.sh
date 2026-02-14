@@ -22,6 +22,16 @@ export MARKET_SYMBOL="$symbol_norm"
 project_name="pm-market-data-${symbol_lower}"
 infra_project="pm-market-data-infra"
 compose_file="$repo_dir/docker-compose.yml"
+followers_services_default="
+  binance-price binance-volume binance-orderbook
+  bybit-price bybit-volume bybit-orderbook
+  bitget-price bitget-volume bitget-orderbook
+  okx-price okx-volume okx-orderbook
+  gate-price gate-volume gate-orderbook
+  kucoin-futures-price kucoin-futures-volume kucoin-futures-orderbook
+  chainlink-price
+"
+followers_services="${FOLLOWER_SERVICES:-$followers_services_default}"
 
 if ! docker network inspect pm-net >/dev/null 2>&1; then
   docker network create pm-net >/dev/null
@@ -32,7 +42,7 @@ case "$action" in
     COMPOSE_PROJECT_NAME="$infra_project" \
       docker compose -f "$compose_file" --profile infra up -d --build
     COMPOSE_PROJECT_NAME="$project_name" \
-      docker compose -f "$compose_file" --profile followers up -d --build
+      docker compose -f "$compose_file" --profile followers up -d --build $followers_services
     ;;
   down)
     COMPOSE_PROJECT_NAME="$project_name" \
@@ -49,7 +59,7 @@ case "$action" in
     COMPOSE_PROJECT_NAME="$infra_project" \
       docker compose -f "$compose_file" --profile infra up -d --build
     COMPOSE_PROJECT_NAME="$project_name" \
-      docker compose -f "$compose_file" --profile followers up -d --build
+      docker compose -f "$compose_file" --profile followers up -d --build $followers_services
     ;;
   *)
     echo "usage: run-crawlers.sh <symbol> [up|down|restart]" >&2

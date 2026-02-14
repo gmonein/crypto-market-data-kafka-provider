@@ -11,8 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"market_follower/internal/nats"
 	"market_follower/internal/models"
+	"market_follower/internal/nats"
+	"market_follower/internal/streammeta"
 	"market_follower/internal/symbols"
 
 	"github.com/gorilla/websocket"
@@ -23,6 +24,15 @@ var (
 	topicFlag    = flag.String("topic", "", "NATS subject")
 	symbolFlag   = flag.String("symbol", symbols.FromEnv("BTCUSDT"), "Binance symbol (e.g. BTCUSDT)")
 )
+
+func buildPriceOutput(symbol string, price string, eventTsMs int64, recvTsMs int64, sourceSeq uint64, sourceEventID string, publishAt time.Time) models.PriceOutput {
+	return models.PriceOutput{
+		Timestamp:  eventTsMs,
+		Price:      price,
+		Symbol:     symbol,
+		StreamMeta: streammeta.Build(eventTsMs, recvTsMs, sourceSeq, sourceEventID, publishAt),
+	}
+}
 
 func main() {
 	flag.Parse()
@@ -51,7 +61,10 @@ func main() {
 	var mu sync.Mutex
 	var lastPrice string
 	var lastTime int64
+	var lastRecvTs int64
+	var lastSourceEventID string
 	var hasNew bool
+	seq := streammeta.NewSequencer()
 
 	// Emitter Routine
 	emitDone := make(chan struct{})
@@ -70,14 +83,12 @@ func main() {
 				}
 				p := lastPrice
 				t := lastTime
+				recvTs := lastRecvTs
+				sourceEventID := lastSourceEventID
 				hasNew = false
 				mu.Unlock()
 
-				output := models.PriceOutput{
-					Timestamp: t,
-					Price:     p,
-					Symbol:    symbolNorm,
-				}
+				output := buildPriceOutput(symbolNorm, p, t, recvTs, seq.Next(), sourceEventID, time.Now())
 
 				outputBytes, err := json.Marshal(output)
 				if err != nil {
@@ -119,6 +130,7 @@ func main() {
 					log.Printf("Read error: %v", err)
 					return
 				}
+				recvTsMs := streammeta.CaptureRecvTsMs()
 
 				var trade models.BinanceTrade
 				if err := json.Unmarshal(message, &trade); err != nil {
@@ -128,6 +140,12 @@ func main() {
 				mu.Lock()
 				lastPrice = trade.Price
 				lastTime = trade.TradeTime
+				lastRecvTs = recvTsMs
+				if trade.TradeID > 0 {
+					lastSourceEventID = fmt.Sprintf("%d", trade.TradeID)
+				} else {
+					lastSourceEventID = ""
+				}
 				hasNew = true
 				mu.Unlock()
 			}

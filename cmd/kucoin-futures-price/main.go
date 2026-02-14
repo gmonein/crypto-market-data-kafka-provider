@@ -15,6 +15,7 @@ import (
 	"market_follower/internal/kucoin"
 	"market_follower/internal/models"
 	"market_follower/internal/nats"
+	"market_follower/internal/streammeta"
 	"market_follower/internal/symbols"
 
 	"github.com/gorilla/websocket"
@@ -139,7 +140,10 @@ func main() {
 	var lastBidQty string
 	var lastAskQty string
 	var lastTime int64
+	var lastRecvTs int64
+	var lastSourceEventID string
 	var hasNew bool
+	seq := streammeta.NewSequencer()
 
 	emitDone := make(chan struct{})
 	go func() {
@@ -161,6 +165,8 @@ func main() {
 				bq := lastBidQty
 				aq := lastAskQty
 				t := lastTime
+				recvTs := lastRecvTs
+				sourceEventID := lastSourceEventID
 				hasNew = false
 				mu.Unlock()
 
@@ -172,6 +178,7 @@ func main() {
 					BestBidQuantity: bq,
 					BestAskQuantity: aq,
 					Symbol:          symbolNorm,
+					StreamMeta:      streammeta.BuildNow(t, recvTs, seq.Next(), sourceEventID),
 				}
 				bts, err := json.Marshal(out)
 				if err != nil {
@@ -260,6 +267,7 @@ func main() {
 					log.Printf("Read error: %v", err)
 					return
 				}
+				recvTsMs := streammeta.CaptureRecvTsMs()
 
 				var env kucoinEnvelope
 				if err := json.Unmarshal(message, &env); err != nil {
@@ -296,6 +304,12 @@ func main() {
 				lastBidQty = bq
 				lastAskQty = aq
 				lastTime = ts
+				lastRecvTs = recvTsMs
+				if tsRaw > 0 {
+					lastSourceEventID = strconv.FormatInt(tsRaw, 10)
+				} else {
+					lastSourceEventID = ""
+				}
 				hasNew = true
 				mu.Unlock()
 			}

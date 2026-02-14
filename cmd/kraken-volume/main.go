@@ -11,8 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"market_follower/internal/nats"
 	"market_follower/internal/models"
+	"market_follower/internal/nats"
+	"market_follower/internal/streammeta"
 	"market_follower/internal/symbols"
 
 	"github.com/gorilla/websocket"
@@ -48,6 +49,7 @@ func main() {
 
 	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
+	seq := streammeta.NewSequencer()
 
 	log.Printf("Starting Kraken Volume Follower. Brokers: %v, Topic: %s, Pair: %s", brokers, topic, pair)
 
@@ -57,17 +59,20 @@ func main() {
 	var mu sync.Mutex
 	var currentBucketSec int64 = -1
 	var currentSum float64
+	var currentBucketRecvTs int64
+	var currentSourceEventID string
 
-	flush := func(sec int64, vol float64) {
+	flush := func(sec int64, vol float64, recvTs int64, sourceEventID string) {
 		if sec <= 0 || vol <= 0 {
 			return
 		}
 		// End-of-second timestamp (ms).
 		ts := (sec+1)*1000 - 1
 		out := models.VolumeOutput{
-			Timestamp: ts,
-			Volume:    strconv.FormatFloat(vol, 'f', -1, 64),
-			Symbol:    symbolNorm,
+			Timestamp:  ts,
+			Volume:     strconv.FormatFloat(vol, 'f', -1, 64),
+			Symbol:     symbolNorm,
+			StreamMeta: streammeta.BuildNow(ts, recvTs, seq.Next(), sourceEventID),
 		}
 		b, err := json.Marshal(out)
 		if err != nil {
@@ -118,6 +123,7 @@ func main() {
 					log.Printf("Read error: %v", err)
 					return
 				}
+				recvTsMs := streammeta.CaptureRecvTsMs()
 
 				// Check for heartbeat/system messages first (usually objects)
 				// Array: [channelID, [[price, vol, time, side, type, misc], ...], channelName, pair]
@@ -180,15 +186,21 @@ func main() {
 					mu.Lock()
 					if currentBucketSec < 0 {
 						currentBucketSec = sec
+						currentBucketRecvTs = recvTsMs
+						currentSourceEventID = strconv.FormatInt(sec*1000, 10)
 					}
 					if sec != currentBucketSec {
 						if sec > currentBucketSec {
-							flush(currentBucketSec, currentSum)
+							flush(currentBucketSec, currentSum, currentBucketRecvTs, currentSourceEventID)
 							currentBucketSec = sec
 							currentSum = 0
+							currentBucketRecvTs = recvTsMs
+							currentSourceEventID = strconv.FormatInt(sec*1000, 10)
 						}
 					}
 					currentSum += vol
+					currentBucketRecvTs = recvTsMs
+					currentSourceEventID = strconv.FormatInt(sec*1000, 10)
 					mu.Unlock()
 				}
 			}
@@ -198,7 +210,7 @@ func main() {
 		case <-interrupt:
 			log.Println("Interrupt received, shutting down...")
 			mu.Lock()
-			flush(currentBucketSec, currentSum)
+			flush(currentBucketSec, currentSum, currentBucketRecvTs, currentSourceEventID)
 			mu.Unlock()
 			conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 			select {
@@ -208,7 +220,7 @@ func main() {
 			return
 		case <-done:
 			mu.Lock()
-			flush(currentBucketSec, currentSum)
+			flush(currentBucketSec, currentSum, currentBucketRecvTs, currentSourceEventID)
 			mu.Unlock()
 			log.Println("WebSocket closed, reconnecting...")
 			time.Sleep(1 * time.Second)

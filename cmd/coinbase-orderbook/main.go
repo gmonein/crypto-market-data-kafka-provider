@@ -21,6 +21,7 @@ import (
 	"market_follower/internal/models"
 	"market_follower/internal/nats"
 	"market_follower/internal/orderbook"
+	"market_follower/internal/streammeta"
 	"market_follower/internal/symbols"
 
 	"github.com/gorilla/websocket"
@@ -48,10 +49,12 @@ type coinbaseMessage struct {
 }
 
 type pendingUpdate struct {
-	sequence int64
-	bids     [][]string
-	asks     [][]string
-	ts       int64
+	sequence      int64
+	bids          [][]string
+	asks          [][]string
+	ts            int64
+	recvTs        int64
+	sourceEventID string
 }
 
 type rawLevels [][]json.RawMessage
@@ -110,6 +113,7 @@ func main() {
 
 	producer := nats.NewProducer(brokers, topic)
 	defer producer.Close()
+	metaSeq := streammeta.NewSequencer()
 
 	log.Printf("Starting Coinbase Orderbook Follower. Brokers: %v, Topic: %s, Product: %s, Output: %s, Mode: %s, RestInterval: %s", brokers, topic, productID, outputMode, mode, restInterval)
 
@@ -133,11 +137,12 @@ func main() {
 	apiPassphrase := strings.TrimSpace(os.Getenv("COINBASE_API_PASSPHRASE"))
 	authEnabled := apiKey != "" && apiSecret != "" && apiPassphrase != ""
 
-	emitSnapshot := func(ts int64, snapshot bool) {
+	emitSnapshot := func(ts int64, recvTs int64, snapshot bool, sourceEventID string) {
 		snap := book.Snapshot(depth)
 		if len(snap.Bids) == 0 && len(snap.Asks) == 0 {
 			return
 		}
+		meta := streammeta.BuildNow(ts, recvTs, metaSeq.Next(), sourceEventID)
 		var out any
 		if outputMode == orderbook.OutputFeatures {
 			metrics, ok := features.ComputeOrderbookFeatures(snap)
@@ -162,6 +167,7 @@ func main() {
 				AskDepth5:       metrics.AskDepth5,
 				BidDepth10:      metrics.BidDepth10,
 				AskDepth10:      metrics.AskDepth10,
+				StreamMeta:      meta,
 			}
 		} else {
 			out = models.OrderbookOutput{
@@ -174,6 +180,7 @@ func main() {
 				Bids:            snap.Bids,
 				Asks:            snap.Asks,
 				Snapshot:        snapshot,
+				StreamMeta:      meta,
 			}
 		}
 		b, err := json.Marshal(out)
@@ -251,11 +258,13 @@ func main() {
 		return bids, asks
 	}
 
-	applySnapshot := func(bids, asks [][]string, seq, ts int64, snapshot bool) bool {
+	applySnapshot := func(bids, asks [][]string, seq, ts int64, recvTs int64, snapshot bool, sourceEventID string) bool {
 		if len(bids) == 0 && len(asks) == 0 {
 			return false
 		}
 		emitTs := ts
+		emitRecvTs := recvTs
+		emitSourceEventID := sourceEventID
 
 		stateMu.Lock()
 		book.ApplySnapshot(bids, asks)
@@ -289,16 +298,22 @@ func main() {
 				if upd.ts > emitTs {
 					emitTs = upd.ts
 				}
+				if upd.recvTs > emitRecvTs {
+					emitRecvTs = upd.recvTs
+				}
+				if upd.sourceEventID != "" {
+					emitSourceEventID = upd.sourceEventID
+				}
 			}
 			pending = nil
 		}
 		stateMu.Unlock()
 
-		emitSnapshot(emitTs, snapshot)
+		emitSnapshot(emitTs, emitRecvTs, snapshot, emitSourceEventID)
 		return true
 	}
 
-	applyUpdate := func(bids, asks [][]string, seq, ts int64) bool {
+	applyUpdate := func(bids, asks [][]string, seq, ts int64, recvTs int64, sourceEventID string) bool {
 		if len(bids) == 0 && len(asks) == 0 {
 			return false
 		}
@@ -306,10 +321,12 @@ func main() {
 		stateMu.Lock()
 		if !bookReady {
 			pending = append(pending, pendingUpdate{
-				sequence: seq,
-				bids:     bids,
-				asks:     asks,
-				ts:       ts,
+				sequence:      seq,
+				bids:          bids,
+				asks:          asks,
+				ts:            ts,
+				recvTs:        recvTs,
+				sourceEventID: sourceEventID,
 			})
 			stateMu.Unlock()
 			return false
@@ -326,10 +343,12 @@ func main() {
 				lastSequence = 0
 				pending = pending[:0]
 				pending = append(pending, pendingUpdate{
-					sequence: seq,
-					bids:     bids,
-					asks:     asks,
-					ts:       ts,
+					sequence:      seq,
+					bids:          bids,
+					asks:          asks,
+					ts:            ts,
+					recvTs:        recvTs,
+					sourceEventID: sourceEventID,
 				})
 				stateMu.Unlock()
 				log.Printf("Sequence gap (last=%d, next=%d); resyncing", prevSeq, seq)
@@ -343,7 +362,7 @@ func main() {
 		book.ApplyDelta(bids, asks)
 		stateMu.Unlock()
 
-		emitSnapshot(ts, false)
+		emitSnapshot(ts, recvTs, false, sourceEventID)
 		return true
 	}
 
@@ -382,7 +401,12 @@ func main() {
 		if len(bids) == 0 && len(asks) == 0 {
 			return
 		}
-		applySnapshot(bids, asks, seq, ts, true)
+		recvTs := streammeta.CaptureRecvTsMs()
+		sourceEventID := ""
+		if seq > 0 {
+			sourceEventID = strconv.FormatInt(seq, 10)
+		}
+		applySnapshot(bids, asks, seq, ts, recvTs, true, sourceEventID)
 	}
 
 	go func() {
@@ -463,6 +487,7 @@ func main() {
 					log.Printf("Read error: %v", err)
 					return
 				}
+				recvTsMs := streammeta.CaptureRecvTsMs()
 
 				var msg coinbaseMessage
 				if err := json.Unmarshal(message, &msg); err != nil {
@@ -490,12 +515,20 @@ func main() {
 
 				switch msg.Type {
 				case "snapshot":
-					if applySnapshot(parseRawLevels(msg.Bids), parseRawLevels(msg.Asks), msg.Sequence, ts, true) {
+					sourceEventID := ""
+					if msg.Sequence > 0 {
+						sourceEventID = strconv.FormatInt(msg.Sequence, 10)
+					}
+					if applySnapshot(parseRawLevels(msg.Bids), parseRawLevels(msg.Asks), msg.Sequence, ts, recvTsMs, true, sourceEventID) {
 						lastWSAt.Store(time.Now().UnixNano())
 					}
 				case "l2update", "update":
 					bids, asks := splitChanges(msg.Changes)
-					if applyUpdate(bids, asks, msg.Sequence, ts) {
+					sourceEventID := ""
+					if msg.Sequence > 0 {
+						sourceEventID = strconv.FormatInt(msg.Sequence, 10)
+					}
+					if applyUpdate(bids, asks, msg.Sequence, ts, recvTsMs, sourceEventID) {
 						lastWSAt.Store(time.Now().UnixNano())
 					}
 				default:

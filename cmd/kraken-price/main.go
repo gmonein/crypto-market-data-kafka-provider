@@ -10,8 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"market_follower/internal/nats"
 	"market_follower/internal/models"
+	"market_follower/internal/nats"
+	"market_follower/internal/streammeta"
 	"market_follower/internal/symbols"
 
 	"github.com/gorilla/websocket"
@@ -63,7 +64,11 @@ func main() {
 	var lastBestAsk string
 	var lastBestBidQuantity string
 	var lastBestAskQuantity string
+	var lastEventTs int64
+	var lastRecvTs int64
+	var lastSourceEventID string
 	var hasNew bool
+	seq := streammeta.NewSequencer()
 
 	// Emitter Loop (Throttle to 10ms/100Hz)
 	go func() {
@@ -85,6 +90,9 @@ func main() {
 				ba := lastBestAsk
 				bq := lastBestBidQuantity
 				aq := lastBestAskQuantity
+				eventTs := lastEventTs
+				recvTs := lastRecvTs
+				sourceEventID := lastSourceEventID
 				hasNew = false
 				mu.Unlock()
 
@@ -98,6 +106,7 @@ func main() {
 					BestBidQuantity: bq,
 					BestAskQuantity: aq,
 					Symbol:          symbolNorm,
+					StreamMeta:      streammeta.BuildNow(eventTs, recvTs, seq.Next(), sourceEventID),
 				}
 				b, _ := json.Marshal(out)
 				log.Printf("%s\n", b)
@@ -138,6 +147,7 @@ func main() {
 					log.Printf("Read error: %v", err)
 					return
 				}
+				recvTsMs := streammeta.CaptureRecvTsMs()
 
 				// Check for heartbeat/system messages first (usually objects)
 				// Ticker data is an array: [channelID, {data}, channelName, pair]
@@ -147,6 +157,7 @@ func main() {
 						mu.Lock()
 						// Trigger emission if we have a valid state
 						if lastPrice != "" {
+							lastRecvTs = recvTsMs
 							hasNew = true
 						}
 						mu.Unlock()
@@ -198,6 +209,8 @@ func main() {
 						lastBestAsk = ba
 						lastBestAskQuantity = aq
 					}
+					lastEventTs = recvTsMs
+					lastRecvTs = recvTsMs
 					hasNew = true
 					mu.Unlock()
 				}
